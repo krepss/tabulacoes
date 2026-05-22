@@ -1,76 +1,99 @@
 import streamlit as st
 import pandas as pd
-import glob
 import os
 
 # 1. Configuração da página
 st.set_page_config(page_title="Dashboard de Filas", layout="wide")
-
-# 2. Função para carregar os dados (com cache para ficar rápido)
-@st.cache_data
-def carregar_dados():
-    # Procura todos os arquivos .csv dentro da pasta 'dados'
-    arquivos_csv = glob.glob("dados/*.csv")
-    
-    if not arquivos_csv:
-        return pd.DataFrame() # Retorna vazio se não achar nada
-    
-    # Lê e junta todos os meses em um único DataFrame
-    lista_dfs = []
-    for arquivo in arquivos_csv:
-        df_temp = pd.read_csv(arquivo)
-        lista_dfs.append(df_temp)
-        
-    df_final = pd.concat(lista_dfs, ignore_index=True)
-    return df_final
-
-# 3. Carregando a base
-df = carregar_dados()
-
 st.title("📊 Dashboard Analítico de Atendimentos")
 
-if df.empty:
-    st.warning("Nenhum dado encontrado. Adicione seus arquivos CSV na pasta 'dados/'.")
-else:
-    # 4. Criando os Filtros na Barra Lateral (Sidebar)
-    st.sidebar.header("Filtros do Dashboard")
+# Criar pasta 'dados' se não existir
+os.makedirs("dados", exist_ok=True)
+ARQUIVO_HISTORICO = "dados/historico_completo.csv"
+
+# ==========================================
+# ÁREA DE UPLOAD E ALIMENTAÇÃO (BARRA LATERAL)
+# ==========================================
+st.sidebar.header("📥 Alimentar Histórico")
+st.sidebar.markdown("Faça o upload do mês e adicione à base.")
+
+arquivo_carregado = st.sidebar.file_uploader("1. Selecione o CSV", type=["csv"])
+mes_referencia = st.sidebar.text_input("2. Identifique o Mês/Ano (Ex: Maio/2026)")
+btn_adicionar = st.sidebar.button("3. Adicionar ao Histórico")
+
+# Lógica de salvar o novo arquivo
+if btn_adicionar:
+    if arquivo_carregado is not None and mes_referencia != "":
+        # Lê o arquivo que você acabou de subir
+        df_novo = pd.read_csv(arquivo_carregado)
+        
+        # Cria uma nova coluna para identificar de qual mês é essa informação
+        df_novo['Mês de Referência'] = mes_referencia
+        
+        # Verifica se já existe um histórico salvo
+        if os.path.exists(ARQUIVO_HISTORICO):
+            df_historico = pd.read_csv(ARQUIVO_HISTORICO)
+            
+            # Evita duplicidade se você clicar no botão duas vezes sem querer
+            if mes_referencia in df_historico['Mês de Referência'].values:
+                st.sidebar.warning(f"Os dados de {mes_referencia} já estão no histórico! Se quiser substituir, precisaremos criar um botão de limpar.")
+            else:
+                # Junta o histórico antigo com o arquivo novo
+                df_atualizado = pd.concat([df_historico, df_novo], ignore_index=True)
+                df_atualizado.to_csv(ARQUIVO_HISTORICO, index=False)
+                st.sidebar.success(f"✅ {mes_referencia} adicionado com sucesso!")
+        else:
+            # Se for a primeira vez, o arquivo novo vira o histórico
+            df_novo.to_csv(ARQUIVO_HISTORICO, index=False)
+            st.sidebar.success(f"✅ Base iniciada com os dados de {mes_referencia}!")
+    else:
+        st.sidebar.error("Por favor, insira o arquivo E digite o mês.")
+
+# ==========================================
+# ÁREA DO DASHBOARD (TELA PRINCIPAL)
+# ==========================================
+st.markdown("---")
+
+if os.path.exists(ARQUIVO_HISTORICO):
+    # Carrega o histórico completo
+    df = pd.read_csv(ARQUIVO_HISTORICO)
     
-    # Pegando os valores únicos para os filtros e removendo nulos
+    st.sidebar.markdown("---")
+    st.sidebar.header("🔍 Filtros de Visualização")
+    
+    # Filtros
+    opcoes_mes = df['Mês de Referência'].dropna().unique().tolist()
     opcoes_fila = df['Fila'].dropna().unique().tolist()
-    opcoes_fin = df['Finalização'].dropna().unique().tolist()
     
-    # Multiselect permite escolher mais de uma fila/tabulação por vez
-    filtro_fila = st.sidebar.multiselect("Selecione a(s) Fila(s):", options=opcoes_fila)
-    filtro_fin = st.sidebar.multiselect("Selecione a(s) Finalização(ões):", options=opcoes_fin)
+    filtro_mes = st.sidebar.multiselect("Filtrar por Mês:", options=opcoes_mes, default=opcoes_mes)
+    filtro_fila = st.sidebar.multiselect("Filtrar por Fila:", options=opcoes_fila)
     
-    # 5. Aplicando os filtros no DataFrame
+    # Aplicando os filtros
     df_filtrado = df.copy()
-    
+    if filtro_mes:
+        df_filtrado = df_filtrado[df_filtrado['Mês de Referência'].isin(filtro_mes)]
     if filtro_fila:
         df_filtrado = df_filtrado[df_filtrado['Fila'].isin(filtro_fila)]
         
-    if filtro_fin:
-        df_filtrado = df_filtrado[df_filtrado['Finalização'].isin(filtro_fin)]
+    # Indicadores
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total de Atendimentos", f"{len(df_filtrado):,}".replace(",", "."))
+    
+    if 'Usuários' in df_filtrado.columns:
+        col2.metric("Usuários Diferentes", df_filtrado['Usuários'].nunique())
         
-    # 6. Exibindo os Indicadores (Cards)
-    st.markdown("### Resumo")
-    col1, col2 = st.columns(2)
-    col1.metric("Total de Registros", f"{len(df_filtrado):,}".replace(",", "."))
-    col2.metric("Total de Usuários Diferentes", df_filtrado['Usuários'].nunique())
+    col3.metric("Meses Analisados", df_filtrado['Mês de Referência'].nunique())
     
-    st.divider()
-    
-    # 7. Exibindo a Tabela de Dados Interativa
-    st.markdown("### Detalhamento dos Dados")
-    
-    # Selecionando apenas as colunas mais importantes para não poluir a tela
-    colunas_exibicao = ['Data', 'Usuários', 'Direção', 'Fila', 'Finalização']
-    
-    # Verifica se as colunas existem antes de exibir (evita erros)
+    # Gráfico simples de evolução por mês (se houver dados)
+    st.markdown("### 📈 Evolução por Mês")
+    resumo_mes = df_filtrado.groupby('Mês de Referência').size().reset_index(name='Quantidade de Atendimentos')
+    st.bar_chart(data=resumo_mes, x='Mês de Referência', y='Quantidade de Atendimentos')
+
+    # Tabela
+    st.markdown("### 📋 Detalhamento dos Dados")
+    colunas_exibicao = ['Mês de Referência', 'Data', 'Usuários', 'Fila', 'Finalização']
     colunas_presentes = [col for col in colunas_exibicao if col in df_filtrado.columns]
     
-    st.dataframe(
-        df_filtrado[colunas_presentes],
-        use_container_width=True,
-        hide_index=True
-    )
+    st.dataframe(df_filtrado[colunas_presentes], use_container_width=True, hide_index=True)
+
+else:
+    st.info("👆 O seu banco de dados está vazio. Use o menu lateral esquerdo para fazer o upload do seu primeiro arquivo CSV.")
