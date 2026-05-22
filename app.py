@@ -46,7 +46,7 @@ def salvar_historico_github(df, sha=None):
     csv_buffer = io.StringIO()
     df.to_csv(csv_buffer, index=False)
     conteudo_str = csv_buffer.getvalue()
-    mensagem_commit = "Incremento de histórico limpo e explodido via Dashboard"
+    mensagem_commit = "Incremento de histórico pareado posicionalmente via Dashboard"
     
     try:
         contents = repo.get_contents(CAMINHO_ARQUIVO)
@@ -69,7 +69,7 @@ def salvar_historico_github(df, sha=None):
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/8956/8956600.png", width=80)
     st.header("📥 Alimentar Histórico")
-    st.markdown("O sistema tratará as filas e tabulações múltiplas (separadas por `;`) de forma individualizada.")
+    st.markdown("O sistema fará o pareamento exato entre a ordem das Filas e das Tabulações.")
     arquivo_carregado = st.file_uploader("1. Selecione o CSV", type=["csv"])
     mes_referencia = st.text_input("2. Mês/Ano (Ex: Abril/2026)")
     btn_adicionar = st.button("3. Adicionar ao Histórico", use_container_width=True, type="primary")
@@ -78,29 +78,47 @@ df_historico, file_sha = carregar_historico_github()
 
 if btn_adicionar:
     if arquivo_carregado is not None and mes_referencia != "":
-        with st.spinner('Tratando a jornada de filas/tabulações e salvando no GitHub...'):
+        with st.spinner('Processando pareamento de jornadas e salvando...'):
             df_bruto = pd.read_csv(arquivo_carregado)
-            df_bruto['Mês de Referência'] = mes_referencia
+            
             df_bruto['Fila'] = df_bruto['Fila'].fillna("")
             df_bruto['Finalização'] = df_bruto['Finalização'].fillna("Sem Tabulação")
             
-            # --- TRATAMENTO DOS DADOS COM EXPLOSÃO (TRATA O ';') ---
-            # 1. Transforma as strings separadas por ';' em listas reais do Python
-            df_bruto['Fila'] = df_bruto['Fila'].apply(lambda x: [f.strip() for f in str(x).split(';') if f.strip()])
-            df_bruto['Finalização'] = df_bruto['Finalização'].apply(lambda x: [t.strip() for t in str(x).split(';') if t.strip()])
+            linhas_processadas = []
             
-            # 2. Explode as colunas para que cada combinação de Fila/Tabulação ganhe sua própria linha dedicada
-            df_processado = df_bruto.explode('Fila').explode('Finalização')
+            # Varre linha por linha do arquivo original para fazer o pareamento por índice
+            for _, row in df_bruto.iterrows():
+                # Separa os textos transformando em listas limpas
+                filas = [f.strip() for f in str(row['Fila']).split(';') if f.strip()]
+                tabulacoes = [t.strip() for t in str(row['Finalização']).split('; Cap') or str(row['Finalização']).split(';') if t.strip()]
+                
+                # Determina o tamanho máximo para evitar erros caso uma lista seja menor que a outra
+                max_len = max(len(filas), len(tabulacoes))
+                
+                for i in range(max_len):
+                    # Pega o elemento correspondente à mesma posição (índice), se não existir preenche com padrão
+                    f_atual = filas[i] if i < len(filas) else "Sem Fila"
+                    t_atual = tabulacoes[i] if i < len(tabulacoes) else "Sem Tabulação"
+                    
+                    # Cria a nova linha pareada mantendo os dados originais daquela jornada
+                    nova_linha = {
+                        'Mês de Referência': mes_referencia,
+                        'Data': row.get('Data', '-'),
+                        'Usuários': row.get('Usuários', 'Desconhecido'),
+                        'Direção': row.get('Direção', '-'),
+                        'Fila': f_atual,
+                        'Finalização': t_atual
+                    }
+                    linhas_processadas.append(nova_linha)
             
-            # 3. Filtra mantendo apenas as linhas que pertencem às nossas FILAS_ALVO de Retenção
-            df_novo_limpo = df_processado[df_processado['Fila'].isin(FILAS_ALVO)].copy()
+            # Transforma a lista de novas linhas em um DataFrame limpo
+            df_combinado = pd.DataFrame(linhas_processadas)
             
-            # Mantém apenas as colunas úteis para economizar espaço no Git
-            colunas_presentes = [col for col in COLUNAS_UTEIS if col in df_novo_limpo.columns]
-            df_novo_limpo = df_novo_limpo[colunas_presentes]
+            # Agora sim: Filtra mantendo APENAS quando a Fila gerada for uma das nossas FILAS_ALVO de retenção
+            df_novo_limpo = df_combinado[df_combinado['Fila'].isin(FILAS_ALVO)].copy()
             
             if df_novo_limpo.empty:
-                st.sidebar.error("Nenhum dado das filas de Retenção foi encontrado após o tratamento deste arquivo!")
+                st.sidebar.error("Nenhum dado das filas de Retenção foi encontrado após o desmembramento!")
             else:
                 if not df_historico.empty:
                     if mes_referencia in df_historico['Mês de Referência'].values:
@@ -109,7 +127,7 @@ if btn_adicionar:
                         df_atualizado = pd.concat([df_historico, df_novo_limpo], ignore_index=True)
                         sucesso, erro_msg = salvar_historico_github(df_atualizado, file_sha)
                         if sucesso:
-                            st.sidebar.success("✅ Incrementado e processado com sucesso!")
+                            st.sidebar.success("✅ Incrementado e pareado com sucesso!")
                             st.rerun() 
                         else:
                             st.sidebar.error(f"Falha ao guardar: {erro_msg}")
@@ -138,13 +156,11 @@ if not df_historico.empty:
     st.sidebar.markdown("---")
     st.sidebar.header("🔍 Filtros de Visualização")
     
-    # Filtro 1: Mês
     opcoes_mes = df_filtrado['Mês de Referência'].dropna().unique().tolist()
     filtro_mes = st.sidebar.multiselect("Filtrar por Mês:", options=opcoes_mes, default=opcoes_mes)
     if filtro_mes:
         df_filtrado = df_filtrado[df_filtrado['Mês de Referência'].isin(filtro_mes)]
         
-    # Filtro 2: Fila Limpa e Única
     opcoes_fila_limpas = sorted(df_filtrado['Fila'].unique().tolist())
     filtro_fila = st.sidebar.multiselect("Filtrar por Fila Específica:", options=opcoes_fila_limpas)
     if filtro_fila:
@@ -266,4 +282,4 @@ if not df_historico.empty:
         st.dataframe(df_filtrado, use_container_width=True, hide_index=True)
 
 else:
-    st.info("👆 O seu banco de dados no GitHub está vazio ou precisa ser reiniciado. Utilize o menu lateral esquerdo para fazer o upload do seu primeiro ficheiro CSV (ex: abril.csv).")
+    st.info("👆 O seu banco de dados no GitHub está vazio. Utilize o menu lateral esquerdo para fazer o upload do seu primeiro ficheiro CSV (ex: abril.csv).")
