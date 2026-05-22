@@ -127,15 +127,22 @@ if not df_historico.empty:
     st.sidebar.markdown("---")
     st.sidebar.header("🔍 Filtros de Visualização")
     
+    # Filtro 1: Mês
     opcoes_mes = df_filtrado['Mês de Referência'].dropna().unique().tolist()
     filtro_mes = st.sidebar.multiselect("Filtrar por Mês:", options=opcoes_mes, default=opcoes_mes)
     if filtro_mes:
         df_filtrado = df_filtrado[df_filtrado['Mês de Referência'].isin(filtro_mes)]
         
-    opcoes_fila = sorted(df_filtrado['Fila'].unique().tolist())
-    filtro_fila = st.sidebar.multiselect("Filtrar por Fila Específica:", options=opcoes_fila)
+    # --- A MUDANÇA ESTÁ AQUI: FILTRO DE FILA INTELIGENTE ---
+    # Mostra apenas as 12 filas limpas no menu
+    opcoes_fila_limpas = sorted(FILAS_ALVO)
+    filtro_fila = st.sidebar.multiselect("Filtrar por Fila Específica:", options=opcoes_fila_limpas)
+    
     if filtro_fila:
-        df_filtrado = df_filtrado[df_filtrado['Fila'].isin(filtro_fila)]
+        # Se escolher uma fila, o sistema vai verificar se o nome escolhido ESTÁ DENTRO do texto enorme da coluna original
+        mascara_fila_selecionada = df_filtrado['Fila'].apply(lambda x: any(f in x for f in filtro_fila))
+        df_filtrado = df_filtrado[mascara_fila_selecionada]
+    # -------------------------------------------------------
         
     resumo_finalizacao = df_filtrado['Finalização'].value_counts().reset_index()
     resumo_finalizacao.columns = ['Finalização', 'Quantidade']
@@ -206,7 +213,6 @@ if not df_historico.empty:
             
             st.divider()
             
-            # --- NOVA FUNCIONALIDADE: BUSCA DE MAIORES UTILIZADORES POR TABULAÇÃO ---
             st.markdown("#### 🏆 Top Operadores por Tabulação Específica")
             st.markdown("Selecione uma tabulação abaixo para descobrir quais os operadores que mais a utilizaram no período filtrado.")
             
@@ -214,16 +220,13 @@ if not df_historico.empty:
             tab_selecionada = st.selectbox("Escolha a Tabulação (Finalização):", options=opcoes_tabulacao)
             
             if tab_selecionada:
-                # Filtra os dados apenas para a tabulação escolhida
                 df_tab_especifica = df_filtrado[df_filtrado['Finalização'] == tab_selecionada]
                 
-                # Conta e ordena os utilizadores dessa tabulação
                 ranking_tab = df_tab_especifica['Usuários'].value_counts().reset_index()
                 ranking_tab.columns = ['Operador', 'Quantidade']
                 top_10_ranking_tab = ranking_tab.head(10).sort_values('Quantidade', ascending=True)
                 
                 if not top_10_ranking_tab.empty:
-                    # Gráfico de quem mais usou
                     fig_ranking_tab = px.bar(
                         top_10_ranking_tab, 
                         x='Quantidade', 
@@ -232,7 +235,7 @@ if not df_historico.empty:
                         title=f"Maiores utilizadores da tabulação: {tab_selecionada[:45]}...",
                         text='Quantidade', 
                         color='Quantidade', 
-                        color_continuous_scale='Oranges' # Cor diferente para diferenciar do global
+                        color_continuous_scale='Oranges' 
                     )
                     fig_ranking_tab.update_layout(yaxis_title="", xaxis_title="", showlegend=False, height=400)
                     fig_ranking_tab.update_traces(textposition='outside')
