@@ -30,23 +30,20 @@ FILAS_ALVO = [
 ]
 
 # ==========================================
-# FUNÇÕES DE LIGAÇÃO AO GITHUB (CORRIGIDAS)
+# FUNÇÕES DE LIGAÇÃO AO GITHUB (SEM CACHE E AUTO-CURATIVAS)
 # ==========================================
-@st.cache_data(ttl=60)
 def carregar_historico_github():
     try:
-        # Tenta pegar o arquivo no GitHub
         contents = repo.get_contents(CAMINHO_ARQUIVO)
         try:
-            # Tenta ler o CSV
             csv_string = contents.decoded_content.decode('utf-8')
             df = pd.read_csv(io.StringIO(csv_string))
             return df, contents.sha
         except Exception:
-            # Se o arquivo existe, mas está vazio ou inválido, retorna vazio MAS COM O SHA (Código de Atualização)
+            # O arquivo existe mas está vazio/corrompido
             return pd.DataFrame(), contents.sha
     except GithubException as e:
-        # Erro 404 significa que o arquivo realmente não existe
+        # 404 significa que o arquivo realmente não existe ainda
         if e.status == 404:
             return pd.DataFrame(), None
         return pd.DataFrame(), None
@@ -57,12 +54,24 @@ def salvar_historico_github(df, sha=None):
     conteudo_str = csv_buffer.getvalue()
     mensagem_commit = "Atualização de base de dados via Dashboard Streamlit"
     
-    if sha:
-        # Se o arquivo já existe (tem um sha), nós ATUALIZAMOS
-        repo.update_file(CAMINHO_ARQUIVO, mensagem_commit, conteudo_str, sha)
-    else:
-        # Se não existe (sha é vazio), nós CRIAMOS
-        repo.create_file(CAMINHO_ARQUIVO, mensagem_commit, conteudo_str)
+    try:
+        if sha:
+            repo.update_file(CAMINHO_ARQUIVO, mensagem_commit, conteudo_str, sha)
+        else:
+            repo.create_file(CAMINHO_ARQUIVO, mensagem_commit, conteudo_str)
+        return True, ""
+    except GithubException as e:
+        # Se tentou criar e deu erro 422 (O arquivo já existe no GitHub)
+        if e.status == 422:
+            try:
+                # Sistema de autocura: busca o SHA atualizado e força o update
+                contents = repo.get_contents(CAMINHO_ARQUIVO)
+                repo.update_file(CAMINHO_ARQUIVO, mensagem_commit, conteudo_str, contents.sha)
+                return True, ""
+            except Exception as ex:
+                return False, f"Tentou corrigir, mas falhou: {str(ex)}"
+        # Retorna o erro exato do GitHub caso seja falta de permissão do Token
+        return False, f"Erro {e.status}: {e.data.get('message', 'Sem detalhes')}"
 
 # ==========================================
 # ÁREA DE UPLOAD (BARRA LATERAL)
@@ -74,6 +83,7 @@ with st.sidebar:
     mes_referencia = st.text_input("2. Mês/Ano (Ex: Maio/2026)")
     btn_adicionar = st.button("3. Adicionar ao Histórico", use_container_width=True, type="primary")
 
+# Lê em tempo real (sem cache)
 df_historico, file_sha = carregar_historico_github()
 
 if btn_adicionar:
@@ -87,16 +97,20 @@ if btn_adicionar:
                     st.sidebar.warning(f"{mes_referencia} já está no histórico!")
                 else:
                     df_atualizado = pd.concat([df_historico, df_novo], ignore_index=True)
-                    salvar_historico_github(df_atualizado, file_sha)
-                    st.sidebar.success("✅ Guardado com sucesso!")
-                    st.cache_data.clear() # Limpa a memória para carregar os novos dados na hora
-                    st.rerun() 
+                    sucesso, erro_msg = salvar_historico_github(df_atualizado, file_sha)
+                    if sucesso:
+                        st.sidebar.success("✅ Guardado com sucesso!")
+                        st.rerun() 
+                    else:
+                        st.sidebar.error(f"Falha ao salvar: {erro_msg}")
             else:
-                # O ERRO ACONTECIA AQUI! Agora passamos o file_sha corretamente.
-                salvar_historico_github(df_novo, file_sha)
-                st.sidebar.success("✅ Base iniciada com sucesso!")
-                st.cache_data.clear() # Limpa a memória para carregar os novos dados na hora
-                st.rerun()
+                # Onde o erro acontecia. Agora está protegido pela autocura e retorna mensagem visível.
+                sucesso, erro_msg = salvar_historico_github(df_novo, file_sha)
+                if sucesso:
+                    st.sidebar.success("✅ Base iniciada com sucesso!")
+                    st.rerun()
+                else:
+                    st.sidebar.error(f"Falha ao salvar: {erro_msg}")
     else:
         st.sidebar.error("Insira o ficheiro E digite o mês.")
 
@@ -111,7 +125,6 @@ if not df_historico.empty:
     df['Fila'] = df['Fila'].fillna("")
     df['Finalização'] = df['Finalização'].fillna("Sem Tabulação")
     
-    # Filtro de Filas
     mascara_filas = df['Fila'].apply(lambda x: any(fila_alvo in x for fila_alvo in FILAS_ALVO))
     df_filtrado = df[mascara_filas].copy()
     
@@ -124,12 +137,10 @@ if not df_historico.empty:
     if filtro_mes:
         df_filtrado = df_filtrado[df_filtrado['Mês de Referência'].isin(filtro_mes)]
         
-    # Preparando dados de Tabulação
     resumo_finalizacao = df_filtrado['Finalização'].value_counts().reset_index()
     resumo_finalizacao.columns = ['Finalização', 'Quantidade']
     top_tabulacao = resumo_finalizacao.iloc[0]['Finalização'] if not resumo_finalizacao.empty else "N/A"
     
-    # --- MÉTRICAS PRINCIPAIS (CARDS) ---
     st.markdown("### 🎯 Indicadores Principais")
     col1, col2, col3 = st.columns(3)
     col1.metric("Total de Atendimentos", f"{len(df_filtrado):,}".replace(",", "."))
@@ -137,8 +148,6 @@ if not df_historico.empty:
     col3.metric("Principal Tabulação (Ofensor)", top_tabulacao.split(';')[0][:30] + "...") 
     
     st.markdown("---")
-
-    # --- ABAS DE NAVEGAÇÃO ---
     aba1, aba2, aba3 = st.tabs(["📈 Visão Geral", "🎯 Análise de Tabulações", "📋 Base de Dados"])
 
     with aba1:
@@ -167,13 +176,7 @@ if not df_historico.empty:
                     color='Quantidade',
                     color_continuous_scale='Blues'
                 )
-                fig_barras.update_layout(
-                    yaxis_title="", 
-                    xaxis_title="", 
-                    showlegend=False,
-                    height=500,
-                    yaxis=dict(tickmode='linear', automargin=True)
-                )
+                fig_barras.update_layout(yaxis_title="", xaxis_title="", showlegend=False, height=500, yaxis=dict(tickmode='linear', automargin=True))
                 fig_barras.update_traces(textposition='outside')
                 st.plotly_chart(fig_barras, use_container_width=True)
                 
@@ -186,17 +189,12 @@ if not df_historico.empty:
                 st.plotly_chart(fig_donut, use_container_width=True)
                 
             st.markdown("#### Tabela Completa de Tabulações")
-            st.dataframe(
-                resumo_finalizacao.style.background_gradient(cmap='Blues', subset=['Quantidade']), 
-                use_container_width=True, 
-                hide_index=True
-            )
+            st.dataframe(resumo_finalizacao.style.background_gradient(cmap='Blues', subset=['Quantidade']), use_container_width=True, hide_index=True)
 
     with aba3:
         st.markdown("#### Detalhamento de Registros Filtrados")
         colunas_exibicao = ['Mês de Referência', 'Data', 'Usuários', 'Fila', 'Finalização']
         colunas_presentes = [col for col in colunas_exibicao if col in df_filtrado.columns]
-        
         st.dataframe(df_filtrado[colunas_presentes], use_container_width=True, hide_index=True)
 
 else:
