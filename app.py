@@ -2,17 +2,16 @@ import streamlit as st
 import pandas as pd
 from github import Github
 import io
+import plotly.express as px
 
 # 1. Configuração da página
 st.set_page_config(page_title="Dashboard de Retenção", layout="wide")
-st.title("📊 Dashboard de Atendimentos: Retenção")
 
 # ==========================================
 # CONFIGURAÇÕES DO GITHUB VIA SECRETS
 # ==========================================
 CAMINHO_ARQUIVO = "dados/historico_completo.csv"
 
-# Autenticação no GitHub puxando diretamente do painel de Secrets
 try:
     token_github = st.secrets["GITHUB_TOKEN"]
     nome_repo = st.secrets["GITHUB_REPO"]
@@ -20,10 +19,9 @@ try:
     g = Github(token_github)
     repo = g.get_repo(nome_repo)
 except Exception as e:
-    st.error("Erro ao ligar ao GitHub. Verifique se configurou o GITHUB_TOKEN e o GITHUB_REPO nas Secrets do Streamlit de forma correta.")
+    st.error("Erro ao ligar ao GitHub. Verifique as Secrets.")
     st.stop()
 
-# Lista de filas alvo (baseado na imagem enviada anteriormente)
 FILAS_ALVO = [
     "RETENCAO", "RETENCAO 5G", "RETENCAO 5G DIGITAL", "RETENCAO 5G DIGITAL FH",
     "RETENCAO AGILITY", "RETENCAO AGILITY DIGITAL", "RETENCAO CALLBACK",
@@ -34,7 +32,7 @@ FILAS_ALVO = [
 # ==========================================
 # FUNÇÕES DE LIGAÇÃO AO GITHUB
 # ==========================================
-@st.cache_data(ttl=60) # Atualiza a leitura a cada 60s
+@st.cache_data(ttl=60)
 def carregar_historico_github():
     try:
         contents = repo.get_contents(CAMINHO_ARQUIVO)
@@ -48,9 +46,7 @@ def salvar_historico_github(df, sha=None):
     csv_buffer = io.StringIO()
     df.to_csv(csv_buffer, index=False)
     conteudo_str = csv_buffer.getvalue()
-    
     mensagem_commit = "Atualização de base de dados via Dashboard Streamlit"
-    
     if sha:
         repo.update_file(CAMINHO_ARQUIVO, mensagem_commit, conteudo_str, sha)
     else:
@@ -59,48 +55,48 @@ def salvar_historico_github(df, sha=None):
 # ==========================================
 # ÁREA DE UPLOAD (BARRA LATERAL)
 # ==========================================
-st.sidebar.header("📥 Alimentar Histórico")
-st.sidebar.markdown("Faça o upload do CSV mensal.")
-
-arquivo_carregado = st.sidebar.file_uploader("1. Selecione o CSV", type=["csv"])
-mes_referencia = st.sidebar.text_input("2. Mês/Ano (Ex: Maio/2026)")
-btn_adicionar = st.sidebar.button("3. Adicionar ao Histórico")
+with st.sidebar:
+    st.image("https://cdn-icons-png.flaticon.com/512/8956/8956600.png", width=80)
+    st.header("📥 Alimentar Histórico")
+    arquivo_carregado = st.file_uploader("1. Selecione o CSV", type=["csv"])
+    mes_referencia = st.text_input("2. Mês/Ano (Ex: Maio/2026)")
+    btn_adicionar = st.button("3. Adicionar ao Histórico", use_container_width=True, type="primary")
 
 df_historico, file_sha = carregar_historico_github()
 
 if btn_adicionar:
     if arquivo_carregado is not None and mes_referencia != "":
-        with st.spinner('A processar e a guardar os dados no GitHub...'):
+        with st.spinner('Salvando no GitHub...'):
             df_novo = pd.read_csv(arquivo_carregado)
             df_novo['Mês de Referência'] = mes_referencia
             
             if not df_historico.empty:
                 if mes_referencia in df_historico['Mês de Referência'].values:
-                    st.sidebar.warning(f"Os dados de {mes_referencia} já estão no histórico!")
+                    st.sidebar.warning(f"{mes_referencia} já está no histórico!")
                 else:
                     df_atualizado = pd.concat([df_historico, df_novo], ignore_index=True)
                     salvar_historico_github(df_atualizado, file_sha)
-                    st.sidebar.success(f"✅ {mes_referencia} guardado no GitHub com sucesso!")
+                    st.sidebar.success("✅ Guardado com sucesso!")
                     st.rerun() 
             else:
                 salvar_historico_github(df_novo)
-                st.sidebar.success(f"✅ Base iniciada e guardada no GitHub com os dados de {mes_referencia}!")
+                st.sidebar.success("✅ Base iniciada com sucesso!")
                 st.rerun()
     else:
-        st.sidebar.error("Por favor, insira o ficheiro E digite o mês.")
+        st.sidebar.error("Insira o ficheiro E digite o mês.")
 
 # ==========================================
 # ÁREA DO DASHBOARD (TELA PRINCIPAL)
 # ==========================================
-st.markdown("---")
+st.title("📊 Painel de Retenção e Tabulações")
+st.markdown("Acompanhamento de volumetria e ofensores das filas de retenção.")
 
 if not df_historico.empty:
     df = df_historico.copy()
-    
     df['Fila'] = df['Fila'].fillna("")
     df['Finalização'] = df['Finalização'].fillna("Sem Tabulação")
     
-    # Filtra apenas as filas de Retenção
+    # Filtro de Filas
     mascara_filas = df['Fila'].apply(lambda x: any(fila_alvo in x for fila_alvo in FILAS_ALVO))
     df_filtrado = df[mascara_filas].copy()
     
@@ -113,31 +109,83 @@ if not df_historico.empty:
     if filtro_mes:
         df_filtrado = df_filtrado[df_filtrado['Mês de Referência'].isin(filtro_mes)]
         
-    col1, col2 = st.columns(2)
-    col1.metric("Total de Atendimentos (Retenção)", f"{len(df_filtrado):,}".replace(",", "."))
+    # Preparando dados de Tabulação
+    resumo_finalizacao = df_filtrado['Finalização'].value_counts().reset_index()
+    resumo_finalizacao.columns = ['Finalização', 'Quantidade']
+    top_tabulacao = resumo_finalizacao.iloc[0]['Finalização'] if not resumo_finalizacao.empty else "N/A"
+    
+    # --- MÉTRICAS PRINCIPAIS (CARDS) ---
+    st.markdown("### 🎯 Indicadores Principais")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total de Atendimentos", f"{len(df_filtrado):,}".replace(",", "."))
     col2.metric("Meses Analisados", df_filtrado['Mês de Referência'].nunique())
+    col3.metric("Principal Tabulação (Ofensor)", top_tabulacao.split(';')[0][:30] + "...") # Pega só o início para não quebrar o layout
     
-    st.markdown("### 🎯 Volume por Finalização (Tabulação)")
-    
-    if not df_filtrado.empty:
-        resumo_finalizacao = df_filtrado['Finalização'].value_counts().reset_index()
-        resumo_finalizacao.columns = ['Finalização', 'Quantidade']
-        
-        col_grafico, col_tabela = st.columns([2, 1])
-        
-        with col_tabela:
-            st.dataframe(resumo_finalizacao, use_container_width=True, hide_index=True)
+    st.markdown("---")
+
+    # --- ABAS DE NAVEGAÇÃO ---
+    aba1, aba2, aba3 = st.tabs(["📈 Visão Geral", "🎯 Análise de Tabulações", "📋 Base de Dados"])
+
+    with aba1:
+        st.markdown("#### Evolução Mensal")
+        # Gráfico de evolução por mês
+        df_evolucao = df_filtrado.groupby('Mês de Referência').size().reset_index(name='Volume')
+        fig_linha = px.line(df_evolucao, x='Mês de Referência', y='Volume', markers=True, 
+                           title="Volume de Atendimentos de Retenção por Mês")
+        fig_linha.update_traces(line_color='#0068c9', line_width=3, marker_size=10)
+        st.plotly_chart(fig_linha, use_container_width=True)
+
+    with aba2:
+        if not df_filtrado.empty:
+            st.markdown("#### Top 10 Tabulações Mais Utilizadas")
             
-        with col_grafico:
-            top_10 = resumo_finalizacao.head(10)
-            st.bar_chart(data=top_10.set_index('Finalização'))
+            # Divide a tela para colocar o gráfico de um lado e um funil do outro
+            col_graf, col_donut = st.columns([2, 1])
             
-        st.markdown("### 📋 Detalhamento dos Registros")
+            top_10 = resumo_finalizacao.head(10).sort_values('Quantidade', ascending=True) # Ascending para o maior ficar no topo no gráfico horizontal
+            
+            with col_graf:
+                # Gráfico de Barras Horizontais (Excelente para ler textos de tabulação)
+                fig_barras = px.bar(
+                    top_10, 
+                    x='Quantidade', 
+                    y='Finalização', 
+                    orientation='h',
+                    text='Quantidade',
+                    color='Quantidade',
+                    color_continuous_scale='Blues'
+                )
+                fig_barras.update_layout(
+                    yaxis_title="", 
+                    xaxis_title="", 
+                    showlegend=False,
+                    height=500,
+                    yaxis=dict(tickmode='linear', automargin=True) # Evita cortar textos grandes
+                )
+                fig_barras.update_traces(textposition='outside')
+                st.plotly_chart(fig_barras, use_container_width=True)
+                
+            with col_donut:
+                st.markdown("#### Concentração (Top 5)")
+                top_5 = resumo_finalizacao.head(5)
+                fig_donut = px.pie(top_5, values='Quantidade', names='Finalização', hole=0.4)
+                fig_donut.update_traces(textposition='inside', textinfo='percent')
+                fig_donut.update_layout(showlegend=False) # Tira a legenda para não poluir
+                st.plotly_chart(fig_donut, use_container_width=True)
+                
+            st.markdown("#### Tabela Completa de Tabulações")
+            st.dataframe(
+                resumo_finalizacao.style.background_gradient(cmap='Blues', subset=['Quantidade']), 
+                use_container_width=True, 
+                hide_index=True
+            )
+
+    with aba3:
+        st.markdown("#### Detalhamento de Registros Filtrados")
         colunas_exibicao = ['Mês de Referência', 'Data', 'Usuários', 'Fila', 'Finalização']
         colunas_presentes = [col for col in colunas_exibicao if col in df_filtrado.columns]
         
         st.dataframe(df_filtrado[colunas_presentes], use_container_width=True, hide_index=True)
-    else:
-        st.warning("Nenhum dado encontrado para as filas de Retenção selecionadas neste mês.")
+
 else:
-    st.info("👆 O seu banco de dados no GitHub está vazio. Utilize o menu lateral para fazer o upload do seu primeiro ficheiro CSV.")
+    st.info("👆 O seu banco de dados no GitHub está vazio. Utilize o menu lateral esquerdo para fazer o upload do seu primeiro ficheiro CSV.")
