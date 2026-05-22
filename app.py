@@ -10,9 +10,6 @@ st.set_page_config(page_title="Dashboard de Retenção", layout="wide")
 # ==========================================
 # CONFIGURAÇÕES DO GITHUB VIA SECRETS
 # ==========================================
-# Caminho exato baseado na sua estrutura (pasta dados/)
-CAMINHO_ARQUIVO = "dados/historico_completo.csv"
-
 try:
     token_github = st.secrets["GITHUB_TOKEN"]
     nome_repo = st.secrets["GITHUB_REPO"]
@@ -31,40 +28,49 @@ FILAS_ALVO = [
 ]
 
 # ==========================================
-# FUNÇÕES DE LIGAÇÃO AO GITHUB (SOLUÇÃO DEFINITIVA)
+# NOVA ARQUITETURA: MÚLTIPLOS FICHEIROS
 # ==========================================
+@st.cache_data(ttl=60)
 def carregar_historico_github():
     try:
-        contents = repo.get_contents(CAMINHO_ARQUIVO)
-        csv_string = contents.decoded_content.decode('utf-8')
-        df = pd.read_csv(io.StringIO(csv_string))
-        return df
+        # Lê a pasta inteira
+        contents = repo.get_contents("dados")
+        dfs = []
+        for file_obj in contents:
+            # Pega apenas os ficheiros CSV
+            if file_obj.name.endswith('.csv'):
+                # Usa o URL de download direto (Muito mais rápido e foge de limites de leitura)
+                df = pd.read_csv(file_obj.download_url)
+                dfs.append(df)
+        
+        if dfs:
+            # Junta todos os meses num só para o Dashboard
+            return pd.concat(dfs, ignore_index=True)
+        return pd.DataFrame()
     except Exception:
         return pd.DataFrame()
 
-def salvar_historico_github(df):
+def salvar_novo_mes(df, mes_referencia):
+    # Cria um nome de ficheiro único para o mês (ex: "mes_Maio_2026.csv")
+    nome_seguro = mes_referencia.replace("/", "_").replace(" ", "_").lower()
+    caminho_arquivo = f"dados/mes_{nome_seguro}.csv"
+    
     csv_buffer = io.StringIO()
     df.to_csv(csv_buffer, index=False)
     conteudo_str = csv_buffer.getvalue()
-    mensagem_commit = "Atualização de base de dados via Dashboard"
+    mensagem_commit = f"Adicionado dados do mês: {mes_referencia}"
     
-    # 1. Procura a identidade (SHA) do ficheiro EM TEMPO REAL antes de gravar
     try:
-        contents = repo.get_contents(CAMINHO_ARQUIVO)
-        file_sha = contents.sha
-    except:
-        file_sha = None
-
-    # 2. Guarda o ficheiro com a identidade confirmada
-    try:
-        if file_sha:
-            repo.update_file(CAMINHO_ARQUIVO, mensagem_commit, conteudo_str, file_sha)
-        else:
-            repo.create_file(CAMINHO_ARQUIVO, mensagem_commit, conteudo_str)
+        # Se o mês já existe, atualiza SÓ esse mês
+        contents = repo.get_contents(caminho_arquivo)
+        repo.update_file(caminho_arquivo, mensagem_commit, conteudo_str, contents.sha)
         return True, ""
     except GithubException as e:
-        mensagem_erro = e.data.get('message', str(e)) if hasattr(e, 'data') else str(e)
-        return False, f"Erro do GitHub {e.status}: {mensagem_erro}"
+        # Se o mês não existe, cria um novo ficheiro
+        if e.status == 404:
+            repo.create_file(caminho_arquivo, mensagem_commit, conteudo_str)
+            return True, ""
+        return False, f"Erro: {e.data.get('message', str(e))}"
 
 # ==========================================
 # ÁREA DE UPLOAD (BARRA LATERAL)
@@ -76,33 +82,24 @@ with st.sidebar:
     mes_referencia = st.text_input("2. Mês/Ano (Ex: Maio/2026)")
     btn_adicionar = st.button("3. Adicionar ao Histórico", use_container_width=True, type="primary")
 
-# Carrega os dados para exibição na tela
 df_historico = carregar_historico_github()
 
 if btn_adicionar:
     if arquivo_carregado is not None and mes_referencia != "":
-        with st.spinner('A comunicar com o GitHub e a guardar os dados...'):
+        with st.spinner(f'A guardar {mes_referencia} como um novo ficheiro...'):
+            # Prepara APENAS os dados deste mês
             df_novo = pd.read_csv(arquivo_carregado)
             df_novo['Mês de Referência'] = mes_referencia
             
-            if not df_historico.empty:
-                if mes_referencia in df_historico['Mês de Referência'].values:
-                    st.sidebar.warning(f"Os dados de {mes_referencia} já estão no histórico!")
-                else:
-                    df_atualizado = pd.concat([df_historico, df_novo], ignore_index=True)
-                    sucesso, erro_msg = salvar_historico_github(df_atualizado)
-                    if sucesso:
-                        st.sidebar.success("✅ Guardado com sucesso no GitHub!")
-                        st.rerun() 
-                    else:
-                        st.sidebar.error(f"Falha ao salvar: {erro_msg}")
+            # Envia apenas este pequeno bloco para o GitHub
+            sucesso, erro_msg = salvar_novo_mes(df_novo, mes_referencia)
+            
+            if sucesso:
+                st.sidebar.success("✅ Guardado com sucesso no GitHub!")
+                st.cache_data.clear() # Força a atualização do ecrã
+                st.rerun() 
             else:
-                sucesso, erro_msg = salvar_historico_github(df_novo)
-                if sucesso:
-                    st.sidebar.success("✅ Base criada e guardada com sucesso no GitHub!")
-                    st.rerun()
-                else:
-                    st.sidebar.error(f"Falha ao salvar: {erro_msg}")
+                st.sidebar.error(f"Falha ao salvar: {erro_msg}")
     else:
         st.sidebar.error("Insira o ficheiro E digite o mês.")
 
@@ -114,6 +111,12 @@ st.markdown("Acompanhamento de volumetria e ofensores das filas de retenção.")
 
 if not df_historico.empty:
     df = df_historico.copy()
+    
+    # Tratamento caso a coluna não exista
+    if 'Fila' not in df.columns or 'Finalização' not in df.columns:
+        st.error("As colunas 'Fila' ou 'Finalização' não foram encontradas no CSV.")
+        st.stop()
+        
     df['Fila'] = df['Fila'].fillna("")
     df['Finalização'] = df['Finalização'].fillna("Sem Tabulação")
     
