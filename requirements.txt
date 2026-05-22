@@ -3,3 +3,4 @@ pandas
 PyGithub
 plotly
 requests
+matplotlib
