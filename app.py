@@ -46,7 +46,7 @@ def salvar_historico_github(df, sha=None):
     csv_buffer = io.StringIO()
     df.to_csv(csv_buffer, index=False)
     conteudo_str = csv_buffer.getvalue()
-    mensagem_commit = "Incremento de histórico limpo via Dashboard"
+    mensagem_commit = "Incremento de histórico limpo e explodido via Dashboard"
     
     try:
         contents = repo.get_contents(CAMINHO_ARQUIVO)
@@ -69,6 +69,7 @@ def salvar_historico_github(df, sha=None):
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/8956/8956600.png", width=80)
     st.header("📥 Alimentar Histórico")
+    st.markdown("O sistema tratará as filas e tabulações múltiplas (separadas por `;`) de forma individualizada.")
     arquivo_carregado = st.file_uploader("1. Selecione o CSV", type=["csv"])
     mes_referencia = st.text_input("2. Mês/Ano (Ex: Abril/2026)")
     btn_adicionar = st.button("3. Adicionar ao Histórico", use_container_width=True, type="primary")
@@ -77,19 +78,29 @@ df_historico, file_sha = carregar_historico_github()
 
 if btn_adicionar:
     if arquivo_carregado is not None and mes_referencia != "":
-        with st.spinner('A limpar os dados e a atualizar o histórico no GitHub...'):
+        with st.spinner('Tratando a jornada de filas/tabulações e salvando no GitHub...'):
             df_bruto = pd.read_csv(arquivo_carregado)
             df_bruto['Mês de Referência'] = mes_referencia
             df_bruto['Fila'] = df_bruto['Fila'].fillna("")
+            df_bruto['Finalização'] = df_bruto['Finalização'].fillna("Sem Tabulação")
             
-            mascara = df_bruto['Fila'].apply(lambda x: any(fila in x for fila in FILAS_ALVO))
-            df_novo_limpo = df_bruto[mascara].copy()
+            # --- TRATAMENTO DOS DADOS COM EXPLOSÃO (TRATA O ';') ---
+            # 1. Transforma as strings separadas por ';' em listas reais do Python
+            df_bruto['Fila'] = df_bruto['Fila'].apply(lambda x: [f.strip() for f in str(x).split(';') if f.strip()])
+            df_bruto['Finalização'] = df_bruto['Finalização'].apply(lambda x: [t.strip() for t in str(x).split(';') if t.strip()])
             
+            # 2. Explode as colunas para que cada combinação de Fila/Tabulação ganhe sua própria linha dedicada
+            df_processado = df_bruto.explode('Fila').explode('Finalização')
+            
+            # 3. Filtra mantendo apenas as linhas que pertencem às nossas FILAS_ALVO de Retenção
+            df_novo_limpo = df_processado[df_processado['Fila'].isin(FILAS_ALVO)].copy()
+            
+            # Mantém apenas as colunas úteis para economizar espaço no Git
             colunas_presentes = [col for col in COLUNAS_UTEIS if col in df_novo_limpo.columns]
             df_novo_limpo = df_novo_limpo[colunas_presentes]
             
             if df_novo_limpo.empty:
-                st.sidebar.error("Nenhum dado das filas de Retenção foi encontrado neste ficheiro!")
+                st.sidebar.error("Nenhum dado das filas de Retenção foi encontrado após o tratamento deste arquivo!")
             else:
                 if not df_historico.empty:
                     if mes_referencia in df_historico['Mês de Referência'].values:
@@ -98,7 +109,7 @@ if btn_adicionar:
                         df_atualizado = pd.concat([df_historico, df_novo_limpo], ignore_index=True)
                         sucesso, erro_msg = salvar_historico_github(df_atualizado, file_sha)
                         if sucesso:
-                            st.sidebar.success("✅ Incrementado com sucesso!")
+                            st.sidebar.success("✅ Incrementado e processado com sucesso!")
                             st.rerun() 
                         else:
                             st.sidebar.error(f"Falha ao guardar: {erro_msg}")
@@ -133,16 +144,11 @@ if not df_historico.empty:
     if filtro_mes:
         df_filtrado = df_filtrado[df_filtrado['Mês de Referência'].isin(filtro_mes)]
         
-    # --- A MUDANÇA ESTÁ AQUI: FILTRO DE FILA INTELIGENTE ---
-    # Mostra apenas as 12 filas limpas no menu
-    opcoes_fila_limpas = sorted(FILAS_ALVO)
+    # Filtro 2: Fila Limpa e Única
+    opcoes_fila_limpas = sorted(df_filtrado['Fila'].unique().tolist())
     filtro_fila = st.sidebar.multiselect("Filtrar por Fila Específica:", options=opcoes_fila_limpas)
-    
     if filtro_fila:
-        # Se escolher uma fila, o sistema vai verificar se o nome escolhido ESTÁ DENTRO do texto enorme da coluna original
-        mascara_fila_selecionada = df_filtrado['Fila'].apply(lambda x: any(f in x for f in filtro_fila))
-        df_filtrado = df_filtrado[mascara_fila_selecionada]
-    # -------------------------------------------------------
+        df_filtrado = df_filtrado[df_filtrado['Fila'].isin(filtro_fila)]
         
     resumo_finalizacao = df_filtrado['Finalização'].value_counts().reset_index()
     resumo_finalizacao.columns = ['Finalização', 'Quantidade']
@@ -150,9 +156,9 @@ if not df_historico.empty:
     
     st.markdown("### 🎯 Indicadores Principais")
     col1, col2, col3 = st.columns(3)
-    col1.metric("Total de Atendimentos", f"{len(df_filtrado):,}".replace(",", "."))
+    col1.metric("Total de Atendimentos (Filtrados)", f"{len(df_filtrado):,}".replace(",", "."))
     col2.metric("Meses Analisados", df_filtrado['Mês de Referência'].nunique())
-    col3.metric("Principal Tabulação (Ofensor)", top_tabulacao.split(';')[0][:30] + "...") 
+    col3.metric("Principal Tabulação (Ofensor)", top_tabulacao[:40] + "...") 
     
     st.markdown("---")
     
@@ -214,7 +220,6 @@ if not df_historico.empty:
             st.divider()
             
             st.markdown("#### 🏆 Top Operadores por Tabulação Específica")
-            st.markdown("Selecione uma tabulação abaixo para descobrir quais os operadores que mais a utilizaram no período filtrado.")
             
             opcoes_tabulacao = sorted(df_filtrado['Finalização'].unique().tolist())
             tab_selecionada = st.selectbox("Escolha a Tabulação (Finalização):", options=opcoes_tabulacao)
@@ -261,4 +266,4 @@ if not df_historico.empty:
         st.dataframe(df_filtrado, use_container_width=True, hide_index=True)
 
 else:
-    st.info("👆 O seu banco de dados no GitHub está vazio. Utilize o menu lateral esquerdo para fazer o upload do seu primeiro ficheiro CSV (ex: abril.csv).")
+    st.info("👆 O seu banco de dados no GitHub está vazio ou precisa ser reiniciado. Utilize o menu lateral esquerdo para fazer o upload do seu primeiro ficheiro CSV (ex: abril.csv).")
