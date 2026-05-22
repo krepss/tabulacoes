@@ -10,7 +10,8 @@ st.set_page_config(page_title="Dashboard de Retenção", layout="wide")
 # ==========================================
 # CONFIGURAÇÕES DO GITHUB VIA SECRETS
 # ==========================================
-CAMINHO_ARQUIVO = "dados/historico_completo.csv"
+# A SOLUÇÃO: Guardar na raiz do repositório para evitar conflitos de pastas!
+CAMINHO_ARQUIVO = "historico_completo.csv"
 
 try:
     token_github = st.secrets["GITHUB_TOKEN"]
@@ -30,7 +31,7 @@ FILAS_ALVO = [
 ]
 
 # ==========================================
-# FUNÇÕES DE LIGAÇÃO AO GITHUB (SEM CACHE E AUTO-CURATIVAS)
+# FUNÇÕES DE LIGAÇÃO AO GITHUB
 # ==========================================
 def carregar_historico_github():
     try:
@@ -40,10 +41,8 @@ def carregar_historico_github():
             df = pd.read_csv(io.StringIO(csv_string))
             return df, contents.sha
         except Exception:
-            # O arquivo existe mas está vazio/corrompido
             return pd.DataFrame(), contents.sha
     except GithubException as e:
-        # 404 significa que o arquivo realmente não existe ainda
         if e.status == 404:
             return pd.DataFrame(), None
         return pd.DataFrame(), None
@@ -61,16 +60,13 @@ def salvar_historico_github(df, sha=None):
             repo.create_file(CAMINHO_ARQUIVO, mensagem_commit, conteudo_str)
         return True, ""
     except GithubException as e:
-        # Se tentou criar e deu erro 422 (O arquivo já existe no GitHub)
         if e.status == 422:
             try:
-                # Sistema de autocura: busca o SHA atualizado e força o update
                 contents = repo.get_contents(CAMINHO_ARQUIVO)
                 repo.update_file(CAMINHO_ARQUIVO, mensagem_commit, conteudo_str, contents.sha)
                 return True, ""
             except Exception as ex:
-                return False, f"Tentou corrigir, mas falhou: {str(ex)}"
-        # Retorna o erro exato do GitHub caso seja falta de permissão do Token
+                return False, f"O ficheiro já existe, mas falhou a atualização. Erro: {str(ex)}"
         return False, f"Erro {e.status}: {e.data.get('message', 'Sem detalhes')}"
 
 # ==========================================
@@ -83,18 +79,17 @@ with st.sidebar:
     mes_referencia = st.text_input("2. Mês/Ano (Ex: Maio/2026)")
     btn_adicionar = st.button("3. Adicionar ao Histórico", use_container_width=True, type="primary")
 
-# Lê em tempo real (sem cache)
 df_historico, file_sha = carregar_historico_github()
 
 if btn_adicionar:
     if arquivo_carregado is not None and mes_referencia != "":
-        with st.spinner('Salvando no GitHub... Isso pode levar alguns segundos.'):
+        with st.spinner('A processar e a guardar no GitHub...'):
             df_novo = pd.read_csv(arquivo_carregado)
             df_novo['Mês de Referência'] = mes_referencia
             
             if not df_historico.empty:
                 if mes_referencia in df_historico['Mês de Referência'].values:
-                    st.sidebar.warning(f"{mes_referencia} já está no histórico!")
+                    st.sidebar.warning(f"Os dados de {mes_referencia} já estão no histórico!")
                 else:
                     df_atualizado = pd.concat([df_historico, df_novo], ignore_index=True)
                     sucesso, erro_msg = salvar_historico_github(df_atualizado, file_sha)
@@ -104,7 +99,6 @@ if btn_adicionar:
                     else:
                         st.sidebar.error(f"Falha ao salvar: {erro_msg}")
             else:
-                # Onde o erro acontecia. Agora está protegido pela autocura e retorna mensagem visível.
                 sucesso, erro_msg = salvar_historico_github(df_novo, file_sha)
                 if sucesso:
                     st.sidebar.success("✅ Base iniciada com sucesso!")
