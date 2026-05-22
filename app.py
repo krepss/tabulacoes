@@ -10,8 +10,8 @@ st.set_page_config(page_title="Dashboard de Retenção", layout="wide")
 # ==========================================
 # CONFIGURAÇÕES DO GITHUB VIA SECRETS
 # ==========================================
-# A SOLUÇÃO: Guardar na raiz do repositório para evitar conflitos de pastas!
-CAMINHO_ARQUIVO = "historico_completo.csv"
+# Caminho exato baseado na sua estrutura (pasta dados/)
+CAMINHO_ARQUIVO = "dados/historico_completo.csv"
 
 try:
     token_github = st.secrets["GITHUB_TOKEN"]
@@ -31,43 +31,40 @@ FILAS_ALVO = [
 ]
 
 # ==========================================
-# FUNÇÕES DE LIGAÇÃO AO GITHUB
+# FUNÇÕES DE LIGAÇÃO AO GITHUB (SOLUÇÃO DEFINITIVA)
 # ==========================================
 def carregar_historico_github():
     try:
         contents = repo.get_contents(CAMINHO_ARQUIVO)
-        try:
-            csv_string = contents.decoded_content.decode('utf-8')
-            df = pd.read_csv(io.StringIO(csv_string))
-            return df, contents.sha
-        except Exception:
-            return pd.DataFrame(), contents.sha
-    except GithubException as e:
-        if e.status == 404:
-            return pd.DataFrame(), None
-        return pd.DataFrame(), None
+        csv_string = contents.decoded_content.decode('utf-8')
+        df = pd.read_csv(io.StringIO(csv_string))
+        return df
+    except Exception:
+        return pd.DataFrame()
 
-def salvar_historico_github(df, sha=None):
+def salvar_historico_github(df):
     csv_buffer = io.StringIO()
     df.to_csv(csv_buffer, index=False)
     conteudo_str = csv_buffer.getvalue()
-    mensagem_commit = "Atualização de base de dados via Dashboard Streamlit"
+    mensagem_commit = "Atualização de base de dados via Dashboard"
     
+    # 1. Procura a identidade (SHA) do ficheiro EM TEMPO REAL antes de gravar
     try:
-        if sha:
-            repo.update_file(CAMINHO_ARQUIVO, mensagem_commit, conteudo_str, sha)
+        contents = repo.get_contents(CAMINHO_ARQUIVO)
+        file_sha = contents.sha
+    except:
+        file_sha = None
+
+    # 2. Guarda o ficheiro com a identidade confirmada
+    try:
+        if file_sha:
+            repo.update_file(CAMINHO_ARQUIVO, mensagem_commit, conteudo_str, file_sha)
         else:
             repo.create_file(CAMINHO_ARQUIVO, mensagem_commit, conteudo_str)
         return True, ""
     except GithubException as e:
-        if e.status == 422:
-            try:
-                contents = repo.get_contents(CAMINHO_ARQUIVO)
-                repo.update_file(CAMINHO_ARQUIVO, mensagem_commit, conteudo_str, contents.sha)
-                return True, ""
-            except Exception as ex:
-                return False, f"O ficheiro já existe, mas falhou a atualização. Erro: {str(ex)}"
-        return False, f"Erro {e.status}: {e.data.get('message', 'Sem detalhes')}"
+        mensagem_erro = e.data.get('message', str(e)) if hasattr(e, 'data') else str(e)
+        return False, f"Erro do GitHub {e.status}: {mensagem_erro}"
 
 # ==========================================
 # ÁREA DE UPLOAD (BARRA LATERAL)
@@ -79,11 +76,12 @@ with st.sidebar:
     mes_referencia = st.text_input("2. Mês/Ano (Ex: Maio/2026)")
     btn_adicionar = st.button("3. Adicionar ao Histórico", use_container_width=True, type="primary")
 
-df_historico, file_sha = carregar_historico_github()
+# Carrega os dados para exibição na tela
+df_historico = carregar_historico_github()
 
 if btn_adicionar:
     if arquivo_carregado is not None and mes_referencia != "":
-        with st.spinner('A processar e a guardar no GitHub...'):
+        with st.spinner('A comunicar com o GitHub e a guardar os dados...'):
             df_novo = pd.read_csv(arquivo_carregado)
             df_novo['Mês de Referência'] = mes_referencia
             
@@ -92,16 +90,16 @@ if btn_adicionar:
                     st.sidebar.warning(f"Os dados de {mes_referencia} já estão no histórico!")
                 else:
                     df_atualizado = pd.concat([df_historico, df_novo], ignore_index=True)
-                    sucesso, erro_msg = salvar_historico_github(df_atualizado, file_sha)
+                    sucesso, erro_msg = salvar_historico_github(df_atualizado)
                     if sucesso:
-                        st.sidebar.success("✅ Guardado com sucesso!")
+                        st.sidebar.success("✅ Guardado com sucesso no GitHub!")
                         st.rerun() 
                     else:
                         st.sidebar.error(f"Falha ao salvar: {erro_msg}")
             else:
-                sucesso, erro_msg = salvar_historico_github(df_novo, file_sha)
+                sucesso, erro_msg = salvar_historico_github(df_novo)
                 if sucesso:
-                    st.sidebar.success("✅ Base iniciada com sucesso!")
+                    st.sidebar.success("✅ Base criada e guardada com sucesso no GitHub!")
                     st.rerun()
                 else:
                     st.sidebar.error(f"Falha ao salvar: {erro_msg}")
