@@ -77,21 +77,19 @@ df_historico, file_sha = carregar_historico_github()
 
 if btn_adicionar:
     if arquivo_carregado is not None and mes_referencia != "":
-        with st.spinner('Limpando os dados e atualizando histórico no GitHub...'):
+        with st.spinner('A limpar os dados e a atualizar o histórico no GitHub...'):
             df_bruto = pd.read_csv(arquivo_carregado)
             df_bruto['Mês de Referência'] = mes_referencia
             df_bruto['Fila'] = df_bruto['Fila'].fillna("")
             
-            # Filtra somente as filas alvo antes de salvar
             mascara = df_bruto['Fila'].apply(lambda x: any(fila in x for fila in FILAS_ALVO))
             df_novo_limpo = df_bruto[mascara].copy()
             
-            # Mantém apenas as colunas úteis
             colunas_presentes = [col for col in COLUNAS_UTEIS if col in df_novo_limpo.columns]
             df_novo_limpo = df_novo_limpo[colunas_presentes]
             
             if df_novo_limpo.empty:
-                st.sidebar.error("Nenhum dado das filas de Retenção foi encontrado neste arquivo!")
+                st.sidebar.error("Nenhum dado das filas de Retenção foi encontrado neste ficheiro!")
             else:
                 if not df_historico.empty:
                     if mes_referencia in df_historico['Mês de Referência'].values:
@@ -103,14 +101,14 @@ if btn_adicionar:
                             st.sidebar.success("✅ Incrementado com sucesso!")
                             st.rerun() 
                         else:
-                            st.sidebar.error(f"Falha ao salvar: {erro_msg}")
+                            st.sidebar.error(f"Falha ao guardar: {erro_msg}")
                 else:
                     sucesso, erro_msg = salvar_historico_github(df_novo_limpo, file_sha)
                     if sucesso:
                         st.sidebar.success("✅ Base iniciada com sucesso na raiz!")
                         st.rerun()
                     else:
-                        st.sidebar.error(f"Falha ao salvar: {erro_msg}")
+                        st.sidebar.error(f"Falha ao guardar: {erro_msg}")
     else:
         st.sidebar.error("Insira o ficheiro E digite o mês.")
 
@@ -129,19 +127,16 @@ if not df_historico.empty:
     st.sidebar.markdown("---")
     st.sidebar.header("🔍 Filtros de Visualização")
     
-    # 1. Filtro de Mês
     opcoes_mes = df_filtrado['Mês de Referência'].dropna().unique().tolist()
     filtro_mes = st.sidebar.multiselect("Filtrar por Mês:", options=opcoes_mes, default=opcoes_mes)
     if filtro_mes:
         df_filtrado = df_filtrado[df_filtrado['Mês de Referência'].isin(filtro_mes)]
         
-    # 2. NOVO FILTRO: Filtro de Fila (Dinâmico com base no que existe na base)
     opcoes_fila = sorted(df_filtrado['Fila'].unique().tolist())
     filtro_fila = st.sidebar.multiselect("Filtrar por Fila Específica:", options=opcoes_fila)
     if filtro_fila:
         df_filtrado = df_filtrado[df_filtrado['Fila'].isin(filtro_fila)]
         
-    # Preparando dados globais de Tabulação
     resumo_finalizacao = df_filtrado['Finalização'].value_counts().reset_index()
     resumo_finalizacao.columns = ['Finalização', 'Quantidade']
     top_tabulacao = resumo_finalizacao.iloc[0]['Finalização'] if not resumo_finalizacao.empty else "N/A"
@@ -154,7 +149,6 @@ if not df_historico.empty:
     
     st.markdown("---")
     
-    # Adicionada a nova aba para análise por operador
     aba1, aba2, aba3, aba4 = st.tabs([
         "📈 Visão Geral", 
         "🎯 Análise de Tabulações", 
@@ -197,26 +191,58 @@ if not df_historico.empty:
             st.dataframe(resumo_finalizacao.style.background_gradient(cmap='Blues', subset=['Quantidade']), use_container_width=True, hide_index=True)
 
     with aba3:
-        st.markdown("#### Volumetria e Tabulações por Operador (Usuário)")
+        st.markdown("#### Volumetria por Operador (Usuário)")
         if not df_filtrado.empty:
-            # Gráfico: Top Operadores com mais volume
             resumo_operador = df_filtrado['Usuários'].value_counts().reset_index()
             resumo_operador.columns = ['Operador', 'Atendimentos']
             top_10_ops = resumo_operador.head(10).sort_values('Atendimentos', ascending=True)
             
             fig_ops = px.bar(top_10_ops, x='Atendimentos', y='Operador', orientation='h',
-                             title="Top 10 Operadores com Maior Volume de Atendimentos",
+                             title="Top 10 Operadores com Maior Volume Global",
                              text='Atendimentos', color='Atendimentos', color_continuous_scale='Teal')
             fig_ops.update_layout(yaxis_title="", xaxis_title="", showlegend=False, height=400)
+            fig_ops.update_traces(textposition='outside')
             st.plotly_chart(fig_ops, use_container_width=True)
             
             st.divider()
             
-            # Tabela Cruzada: Quantidade de tabulações por operador
-            st.markdown("#### Detalhamento de Tabulações por Operador")
-            st.markdown("Use a caixa de pesquisa da tabela abaixo para buscar por um operador específico ou filtrar uma tabulação.")
+            # --- NOVA FUNCIONALIDADE: BUSCA DE MAIORES UTILIZADORES POR TABULAÇÃO ---
+            st.markdown("#### 🏆 Top Operadores por Tabulação Específica")
+            st.markdown("Selecione uma tabulação abaixo para descobrir quais os operadores que mais a utilizaram no período filtrado.")
             
-            # Agrupa por Operador (Usuários) e Finalização
+            opcoes_tabulacao = sorted(df_filtrado['Finalização'].unique().tolist())
+            tab_selecionada = st.selectbox("Escolha a Tabulação (Finalização):", options=opcoes_tabulacao)
+            
+            if tab_selecionada:
+                # Filtra os dados apenas para a tabulação escolhida
+                df_tab_especifica = df_filtrado[df_filtrado['Finalização'] == tab_selecionada]
+                
+                # Conta e ordena os utilizadores dessa tabulação
+                ranking_tab = df_tab_especifica['Usuários'].value_counts().reset_index()
+                ranking_tab.columns = ['Operador', 'Quantidade']
+                top_10_ranking_tab = ranking_tab.head(10).sort_values('Quantidade', ascending=True)
+                
+                if not top_10_ranking_tab.empty:
+                    # Gráfico de quem mais usou
+                    fig_ranking_tab = px.bar(
+                        top_10_ranking_tab, 
+                        x='Quantidade', 
+                        y='Operador', 
+                        orientation='h',
+                        title=f"Maiores utilizadores da tabulação: {tab_selecionada[:45]}...",
+                        text='Quantidade', 
+                        color='Quantidade', 
+                        color_continuous_scale='Oranges' # Cor diferente para diferenciar do global
+                    )
+                    fig_ranking_tab.update_layout(yaxis_title="", xaxis_title="", showlegend=False, height=400)
+                    fig_ranking_tab.update_traces(textposition='outside')
+                    st.plotly_chart(fig_ranking_tab, use_container_width=True)
+                else:
+                    st.info("Não há registos desta tabulação no período selecionado.")
+            
+            st.divider()
+            
+            st.markdown("#### Detalhamento Completo (Tabela Cruzada)")
             cruzamento_op_tab = df_filtrado.groupby(['Usuários', 'Finalização']).size().reset_index(name='Quantidade')
             cruzamento_op_tab = cruzamento_op_tab.sort_values(by=['Usuários', 'Quantidade'], ascending=[True, False])
             cruzamento_op_tab.columns = ['Operador (Usuário)', 'Tabulação (Finalização)', 'Quantidade de Vezes Usada']
