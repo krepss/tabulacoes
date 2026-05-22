@@ -69,7 +69,6 @@ def salvar_historico_github(df, sha=None):
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/8956/8956600.png", width=80)
     st.header("📥 Alimentar Histórico")
-    st.markdown("O sistema fará a limpeza automática para salvar apenas dados de retenção.")
     arquivo_carregado = st.file_uploader("1. Selecione o CSV", type=["csv"])
     mes_referencia = st.text_input("2. Mês/Ano (Ex: Abril/2026)")
     btn_adicionar = st.button("3. Adicionar ao Histórico", use_container_width=True, type="primary")
@@ -78,17 +77,16 @@ df_historico, file_sha = carregar_historico_github()
 
 if btn_adicionar:
     if arquivo_carregado is not None and mes_referencia != "":
-        with st.spinner('Limpando os dados desnecessários e salvando no GitHub...'):
-            # 1. Lê o arquivo bruto
+        with st.spinner('Limpando os dados e atualizando histórico no GitHub...'):
             df_bruto = pd.read_csv(arquivo_carregado)
             df_bruto['Mês de Referência'] = mes_referencia
             df_bruto['Fila'] = df_bruto['Fila'].fillna("")
             
-            # 2. O GRANDE TRUQUE: Filtra SOMENTE as filas alvo antes de salvar
+            # Filtra somente as filas alvo antes de salvar
             mascara = df_bruto['Fila'].apply(lambda x: any(fila in x for fila in FILAS_ALVO))
             df_novo_limpo = df_bruto[mascara].copy()
             
-            # 3. Mantém apenas as colunas úteis
+            # Mantém apenas as colunas úteis
             colunas_presentes = [col for col in COLUNAS_UTEIS if col in df_novo_limpo.columns]
             df_novo_limpo = df_novo_limpo[colunas_presentes]
             
@@ -123,19 +121,27 @@ st.title("📊 Painel de Retenção e Tabulações")
 st.markdown("Acompanhamento de volumetria e ofensores das filas de retenção.")
 
 if not df_historico.empty:
-    # A base já vem limpa do GitHub!
     df_filtrado = df_historico.copy()
     df_filtrado['Finalização'] = df_filtrado.get('Finalização', pd.Series()).fillna("Sem Tabulação")
+    df_filtrado['Usuários'] = df_filtrado.get('Usuários', pd.Series()).fillna("Desconhecido")
+    df_filtrado['Fila'] = df_filtrado.get('Fila', pd.Series()).fillna("Sem Fila")
     
     st.sidebar.markdown("---")
     st.sidebar.header("🔍 Filtros de Visualização")
     
+    # 1. Filtro de Mês
     opcoes_mes = df_filtrado['Mês de Referência'].dropna().unique().tolist()
     filtro_mes = st.sidebar.multiselect("Filtrar por Mês:", options=opcoes_mes, default=opcoes_mes)
-    
     if filtro_mes:
         df_filtrado = df_filtrado[df_filtrado['Mês de Referência'].isin(filtro_mes)]
         
+    # 2. NOVO FILTRO: Filtro de Fila (Dinâmico com base no que existe na base)
+    opcoes_fila = sorted(df_filtrado['Fila'].unique().tolist())
+    filtro_fila = st.sidebar.multiselect("Filtrar por Fila Específica:", options=opcoes_fila)
+    if filtro_fila:
+        df_filtrado = df_filtrado[df_filtrado['Fila'].isin(filtro_fila)]
+        
+    # Preparando dados globais de Tabulação
     resumo_finalizacao = df_filtrado['Finalização'].value_counts().reset_index()
     resumo_finalizacao.columns = ['Finalização', 'Quantidade']
     top_tabulacao = resumo_finalizacao.iloc[0]['Finalização'] if not resumo_finalizacao.empty else "N/A"
@@ -147,7 +153,14 @@ if not df_historico.empty:
     col3.metric("Principal Tabulação (Ofensor)", top_tabulacao.split(';')[0][:30] + "...") 
     
     st.markdown("---")
-    aba1, aba2, aba3 = st.tabs(["📈 Visão Geral", "🎯 Análise de Tabulações", "📋 Base de Dados"])
+    
+    # Adicionada a nova aba para análise por operador
+    aba1, aba2, aba3, aba4 = st.tabs([
+        "📈 Visão Geral", 
+        "🎯 Análise de Tabulações", 
+        "👤 Análise por Operador", 
+        "📋 Base de Dados"
+    ])
 
     with aba1:
         st.markdown("#### Evolução Mensal")
@@ -184,6 +197,37 @@ if not df_historico.empty:
             st.dataframe(resumo_finalizacao.style.background_gradient(cmap='Blues', subset=['Quantidade']), use_container_width=True, hide_index=True)
 
     with aba3:
+        st.markdown("#### Volumetria e Tabulações por Operador (Usuário)")
+        if not df_filtrado.empty:
+            # Gráfico: Top Operadores com mais volume
+            resumo_operador = df_filtrado['Usuários'].value_counts().reset_index()
+            resumo_operador.columns = ['Operador', 'Atendimentos']
+            top_10_ops = resumo_operador.head(10).sort_values('Atendimentos', ascending=True)
+            
+            fig_ops = px.bar(top_10_ops, x='Atendimentos', y='Operador', orientation='h',
+                             title="Top 10 Operadores com Maior Volume de Atendimentos",
+                             text='Atendimentos', color='Atendimentos', color_continuous_scale='Teal')
+            fig_ops.update_layout(yaxis_title="", xaxis_title="", showlegend=False, height=400)
+            st.plotly_chart(fig_ops, use_container_width=True)
+            
+            st.divider()
+            
+            # Tabela Cruzada: Quantidade de tabulações por operador
+            st.markdown("#### Detalhamento de Tabulações por Operador")
+            st.markdown("Use a caixa de pesquisa da tabela abaixo para buscar por um operador específico ou filtrar uma tabulação.")
+            
+            # Agrupa por Operador (Usuários) e Finalização
+            cruzamento_op_tab = df_filtrado.groupby(['Usuários', 'Finalização']).size().reset_index(name='Quantidade')
+            cruzamento_op_tab = cruzamento_op_tab.sort_values(by=['Usuários', 'Quantidade'], ascending=[True, False])
+            cruzamento_op_tab.columns = ['Operador (Usuário)', 'Tabulação (Finalização)', 'Quantidade de Vezes Usada']
+            
+            st.dataframe(
+                cruzamento_op_tab.style.background_gradient(cmap='GnBu', subset=['Quantidade de Vezes Usada']),
+                use_container_width=True,
+                hide_index=True
+            )
+
+    with aba4:
         st.markdown("#### Detalhamento de Registros")
         st.dataframe(df_filtrado, use_container_width=True, hide_index=True)
 
