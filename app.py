@@ -3,15 +3,13 @@ import pandas as pd
 from github import Github, GithubException
 import io
 import plotly.express as px
-import base64
 
 # 1. Configuração da página
 st.set_page_config(page_title="Dashboard de Retenção", layout="wide")
 
 # ==========================================
-# CONFIGURAÇÕES DO GITHUB VIA SECRETS
+# CONFIGURAÇÕES DO GITHUB
 # ==========================================
-# Mudança estratégica: Salva na raiz (main) ao lado do app.py
 CAMINHO_ARQUIVO = "historico_completo.csv"
 
 try:
@@ -31,27 +29,25 @@ FILAS_ALVO = [
     "RETENCAO MULTISKILL", "RETENCAO OMNI MULTISKILL"
 ]
 
+COLUNAS_UTEIS = ['Mês de Referência', 'Data', 'Usuários', 'Direção', 'Fila', 'Finalização']
+
 # ==========================================
-# FUNÇÕES DE LIGAÇÃO E SEGURANÇA DO GITHUB
+# FUNÇÕES DE LIGAÇÃO
 # ==========================================
 def carregar_historico_github():
     try:
         contents = repo.get_contents(CAMINHO_ARQUIVO)
-        # Força o download direto do raw para evitar limites de tamanho na leitura
         df = pd.read_csv(contents.download_url)
         return df, contents.sha
     except Exception:
-        # Se não existir ou falhar, retorna uma base vazia pronta para começar
         return pd.DataFrame(), None
 
 def salvar_historico_github(df, sha=None):
-    # Converte o DataFrame para CSV em string de forma otimizada
     csv_buffer = io.StringIO()
     df.to_csv(csv_buffer, index=False)
     conteudo_str = csv_buffer.getvalue()
-    mensagem_commit = "Incremento de histórico via Dashboard Streamlit"
+    mensagem_commit = "Incremento de histórico limpo via Dashboard"
     
-    # Busca o SHA em tempo real logo antes de salvar para evitar descompasso (Erro 404/422)
     try:
         contents = repo.get_contents(CAMINHO_ARQUIVO)
         sha_atualizado = contents.sha
@@ -65,9 +61,6 @@ def salvar_historico_github(df, sha=None):
             repo.create_file(CAMINHO_ARQUIVO, mensagem_commit, conteudo_str)
         return True, ""
     except GithubException as e:
-        # Sistema de contingência automática caso o arquivo seja muito pesado
-        if e.status == 422 or "large" in str(e).lower():
-            return False, "O GitHub rejeitou o tamanho do arquivo. Verifique se o seu CSV possui colunas desnecessárias pesando o arquivo."
         return False, f"Erro {e.status}: {e.data.get('message', str(e))}"
 
 # ==========================================
@@ -76,41 +69,50 @@ def salvar_historico_github(df, sha=None):
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/8956/8956600.png", width=80)
     st.header("📥 Alimentar Histórico")
+    st.markdown("O sistema fará a limpeza automática para salvar apenas dados de retenção.")
     arquivo_carregado = st.file_uploader("1. Selecione o CSV", type=["csv"])
     mes_referencia = st.text_input("2. Mês/Ano (Ex: Abril/2026)")
     btn_adicionar = st.button("3. Adicionar ao Histórico", use_container_width=True, type="primary")
 
-# Carrega a base atual guardada na raiz do Git
 df_historico, file_sha = carregar_historico_github()
 
 if btn_adicionar:
     if arquivo_carregado is not None and mes_referencia != "":
-        with st.spinner('Processando dados e salvando na Main do GitHub...'):
-            # Lendo o arquivo enviado
-            df_novo = pd.read_csv(arquivo_carregado)
-            df_novo['Mês de Referência'] = mes_referencia
+        with st.spinner('Limpando os dados desnecessários e salvando no GitHub...'):
+            # 1. Lê o arquivo bruto
+            df_bruto = pd.read_csv(arquivo_carregado)
+            df_bruto['Mês de Referência'] = mes_referencia
+            df_bruto['Fila'] = df_bruto['Fila'].fillna("")
             
-            # Executa a lógica de incremento
-            if not df_historico.empty:
-                if mes_referencia in df_historico['Mês de Referência'].values:
-                    st.sidebar.warning(f"Os dados de {mes_referencia} já estão catalogados no histórico!")
+            # 2. O GRANDE TRUQUE: Filtra SOMENTE as filas alvo antes de salvar
+            mascara = df_bruto['Fila'].apply(lambda x: any(fila in x for fila in FILAS_ALVO))
+            df_novo_limpo = df_bruto[mascara].copy()
+            
+            # 3. Mantém apenas as colunas úteis
+            colunas_presentes = [col for col in COLUNAS_UTEIS if col in df_novo_limpo.columns]
+            df_novo_limpo = df_novo_limpo[colunas_presentes]
+            
+            if df_novo_limpo.empty:
+                st.sidebar.error("Nenhum dado das filas de Retenção foi encontrado neste arquivo!")
+            else:
+                if not df_historico.empty:
+                    if mes_referencia in df_historico['Mês de Referência'].values:
+                        st.sidebar.warning(f"Os dados de {mes_referencia} já estão no histórico!")
+                    else:
+                        df_atualizado = pd.concat([df_historico, df_novo_limpo], ignore_index=True)
+                        sucesso, erro_msg = salvar_historico_github(df_atualizado, file_sha)
+                        if sucesso:
+                            st.sidebar.success("✅ Incrementado com sucesso!")
+                            st.rerun() 
+                        else:
+                            st.sidebar.error(f"Falha ao salvar: {erro_msg}")
                 else:
-                    # Une a base antiga com as novas linhas do mês atual
-                    df_atualizado = pd.concat([df_historico, df_novo], ignore_index=True)
-                    sucesso, erro_msg = salvar_historico_github(df_atualizado, file_sha)
+                    sucesso, erro_msg = salvar_historico_github(df_novo_limpo, file_sha)
                     if sucesso:
-                        st.sidebar.success("✅ Incrementado com sucesso!")
-                        st.rerun() 
+                        st.sidebar.success("✅ Base iniciada com sucesso na raiz!")
+                        st.rerun()
                     else:
                         st.sidebar.error(f"Falha ao salvar: {erro_msg}")
-            else:
-                # Se for o primeiro upload (Abril), inicia o arquivo na raiz
-                sucesso, erro_msg = salvar_historico_github(df_novo, file_sha)
-                if sucesso:
-                    st.sidebar.success("✅ Base iniciada com sucesso na raiz!")
-                    st.rerun()
-                else:
-                    st.sidebar.error(f"Falha ao salvar: {erro_msg}")
     else:
         st.sidebar.error("Insira o ficheiro E digite o mês.")
 
@@ -121,13 +123,9 @@ st.title("📊 Painel de Retenção e Tabulações")
 st.markdown("Acompanhamento de volumetria e ofensores das filas de retenção.")
 
 if not df_historico.empty:
-    df = df_historico.copy()
-    df['Fila'] = df['Fila'].fillna("")
-    df['Finalização'] = df['Finalização'].fillna("Sem Tabulação")
-    
-    # Aplica o filtro fixo de filas de Retenção
-    mascara_filas = df['Fila'].apply(lambda x: any(fila_alvo in x for fila_alvo in FILAS_ALVO))
-    df_filtrado = df[mascara_filas].copy()
+    # A base já vem limpa do GitHub!
+    df_filtrado = df_historico.copy()
+    df_filtrado['Finalização'] = df_filtrado.get('Finalização', pd.Series()).fillna("Sem Tabulação")
     
     st.sidebar.markdown("---")
     st.sidebar.header("🔍 Filtros de Visualização")
@@ -168,15 +166,8 @@ if not df_historico.empty:
             top_10 = resumo_finalizacao.head(10).sort_values('Quantidade', ascending=True) 
             
             with col_graf:
-                fig_barras = px.bar(
-                    top_10, 
-                    x='Quantidade', 
-                    y='Finalização', 
-                    orientation='h',
-                    text='Quantidade',
-                    color='Quantidade',
-                    color_continuous_scale='Blues'
-                )
+                fig_barras = px.bar(top_10, x='Quantidade', y='Finalização', orientation='h',
+                                    text='Quantidade', color='Quantidade', color_continuous_scale='Blues')
                 fig_barras.update_layout(yaxis_title="", xaxis_title="", showlegend=False, height=500, yaxis=dict(tickmode='linear', automargin=True))
                 fig_barras.update_traces(textposition='outside')
                 st.plotly_chart(fig_barras, use_container_width=True)
@@ -193,10 +184,8 @@ if not df_historico.empty:
             st.dataframe(resumo_finalizacao.style.background_gradient(cmap='Blues', subset=['Quantidade']), use_container_width=True, hide_index=True)
 
     with aba3:
-        st.markdown("#### Detalhamento de Registros Filtrados")
-        colunas_exibicao = ['Mês de Referência', 'Data', 'Usuários', 'Fila', 'Finalização']
-        colunas_presentes = [col for col in colunas_exibicao if col in df_filtrado.columns]
-        st.dataframe(df_filtrado[colunas_presentes], use_container_width=True, hide_index=True)
+        st.markdown("#### Detalhamento de Registros")
+        st.dataframe(df_filtrado, use_container_width=True, hide_index=True)
 
 else:
     st.info("👆 O seu banco de dados no GitHub está vazio. Utilize o menu lateral esquerdo para fazer o upload do seu primeiro ficheiro CSV (ex: abril.csv).")
