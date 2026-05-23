@@ -46,7 +46,7 @@ def salvar_historico_github(df, sha=None):
     csv_buffer = io.StringIO()
     df.to_csv(csv_buffer, index=False)
     conteudo_str = csv_buffer.getvalue()
-    mensagem_commit = "Incremento de histórico pareado posicionalmente via Dashboard"
+    mensagem_commit = "Base pareada triplamente (Usuario+Fila+Tabulacao)"
     
     try:
         contents = repo.get_contents(CAMINHO_ARQUIVO)
@@ -69,7 +69,7 @@ def salvar_historico_github(df, sha=None):
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/8956/8956600.png", width=80)
     st.header("📥 Alimentar Histórico")
-    st.markdown("O sistema fará o pareamento exato entre a ordem das Filas e das Tabulações.")
+    st.markdown("O sistema fará o pareamento exato entre Usuário, Fila e Tabulação.")
     arquivo_carregado = st.file_uploader("1. Selecione o CSV", type=["csv"])
     mes_referencia = st.text_input("2. Mês/Ano (Ex: Abril/2026)")
     btn_adicionar = st.button("3. Adicionar ao Histórico", use_container_width=True, type="primary")
@@ -78,63 +78,64 @@ df_historico, file_sha = carregar_historico_github()
 
 if btn_adicionar:
     if arquivo_carregado is not None and mes_referencia != "":
-        with st.spinner('Processando pareamento de jornadas e salvando...'):
+        with st.spinner('A processar o pareamento triplo (Usuário > Fila > Tabulação)...'):
             df_bruto = pd.read_csv(arquivo_carregado)
             
-            df_bruto['Fila'] = df_bruto['Fila'].fillna("")
+            df_bruto['Usuários'] = df_bruto['Usuários'].fillna("Desconhecido")
+            df_bruto['Fila'] = df_bruto['Fila'].fillna("Sem Fila")
             df_bruto['Finalização'] = df_bruto['Finalização'].fillna("Sem Tabulação")
             
             linhas_processadas = []
             
-            # Varre linha por linha do arquivo original para fazer o pareamento por índice
             for _, row in df_bruto.iterrows():
-                # Separa os textos transformando em listas limpas
+                # Agora separamos as TRÊS colunas baseadas no ponto e vírgula
+                usuarios = [u.strip() for u in str(row['Usuários']).split(';') if u.strip()]
                 filas = [f.strip() for f in str(row['Fila']).split(';') if f.strip()]
-                tabulacoes = [t.strip() for t in str(row['Finalização']).split('; Cap') or str(row['Finalização']).split(';') if t.strip()]
+                tabulacoes = [t.strip() for t in str(row['Finalização']).split(';') if t.strip()]
                 
-                # Determina o tamanho máximo para evitar erros caso uma lista seja menor que a outra
-                max_len = max(len(filas), len(tabulacoes))
+                # Pega o maior tamanho entre os 3 para não deixar ninguém de fora
+                max_len = max(len(usuarios), len(filas), len(tabulacoes))
                 
                 for i in range(max_len):
-                    # Pega o elemento correspondente à mesma posição (índice), se não existir preenche com padrão
+                    # Se uma lista for menor que a outra, preenche com um padrão
+                    u_atual = usuarios[i] if i < len(usuarios) else "Desconhecido"
                     f_atual = filas[i] if i < len(filas) else "Sem Fila"
                     t_atual = tabulacoes[i] if i < len(tabulacoes) else "Sem Tabulação"
                     
-                    # Cria a nova linha pareada mantendo os dados originais daquela jornada
+                    # Salva a linha com a pessoa certa, na fila certa, com a tabulação certa
                     nova_linha = {
                         'Mês de Referência': mes_referencia,
                         'Data': row.get('Data', '-'),
-                        'Usuários': row.get('Usuários', 'Desconhecido'),
+                        'Usuários': u_atual,
                         'Direção': row.get('Direção', '-'),
                         'Fila': f_atual,
                         'Finalização': t_atual
                     }
                     linhas_processadas.append(nova_linha)
             
-            # Transforma a lista de novas linhas em um DataFrame limpo
             df_combinado = pd.DataFrame(linhas_processadas)
             
-            # Agora sim: Filtra mantendo APENAS quando a Fila gerada for uma das nossas FILAS_ALVO de retenção
+            # Filtra mantendo apenas o que virou uma Fila de Retenção
             df_novo_limpo = df_combinado[df_combinado['Fila'].isin(FILAS_ALVO)].copy()
             
             if df_novo_limpo.empty:
-                st.sidebar.error("Nenhum dado das filas de Retenção foi encontrado após o desmembramento!")
+                st.sidebar.error("Nenhum dado das filas de Retenção foi localizado após o pareamento!")
             else:
                 if not df_historico.empty:
                     if mes_referencia in df_historico['Mês de Referência'].values:
-                        st.sidebar.warning(f"Os dados de {mes_referencia} já estão no histórico!")
+                        st.sidebar.warning(f"Os dados de {mes_referencia} já estão catalogados!")
                     else:
                         df_atualizado = pd.concat([df_historico, df_novo_limpo], ignore_index=True)
                         sucesso, erro_msg = salvar_historico_github(df_atualizado, file_sha)
                         if sucesso:
-                            st.sidebar.success("✅ Incrementado e pareado com sucesso!")
+                            st.sidebar.success("✅ Adicionado com sucesso!")
                             st.rerun() 
                         else:
                             st.sidebar.error(f"Falha ao guardar: {erro_msg}")
                 else:
                     sucesso, erro_msg = salvar_historico_github(df_novo_limpo, file_sha)
                     if sucesso:
-                        st.sidebar.success("✅ Base iniciada com sucesso na raiz!")
+                        st.sidebar.success("✅ Base iniciada com sucesso!")
                         st.rerun()
                     else:
                         st.sidebar.error(f"Falha ao guardar: {erro_msg}")
@@ -216,7 +217,33 @@ if not df_historico.empty:
                 fig_donut.update_layout(showlegend=False) 
                 st.plotly_chart(fig_donut, use_container_width=True)
                 
-            st.markdown("#### Tabela Completa de Tabulações")
+            st.divider()
+            
+            st.markdown("### 🏆 Colaboradores que mais utilizam esta Tabulação")
+            opcoes_tab_aba2 = sorted(df_filtrado['Finalização'].unique().tolist())
+            tab_selecionada_aba2 = st.selectbox("Escolha uma tabulação para ver o ranking de colaboradores:", options=opcoes_tab_aba2, key="aba2_tab")
+            
+            if tab_selecionada_aba2:
+                df_tab_aba2 = df_filtrado[df_filtrado['Finalização'] == tab_selecionada_aba2]
+                ranking_colaboradores = df_tab_aba2['Usuários'].value_counts().reset_index()
+                ranking_colaboradores.columns = ['Colaborador (Usuário)', 'Quantidade de Vezes Usada']
+                
+                col_ranking_graf, col_ranking_tab = st.columns([2, 1])
+                
+                with col_ranking_graf:
+                    top_10_colabs = ranking_colaboradores.head(10).sort_values('Quantidade de Vezes Usada', ascending=True)
+                    fig_colabs = px.bar(top_10_colabs, x='Quantidade de Vezes Usada', y='Colaborador (Usuário)', 
+                                        orientation='h', color='Quantidade de Vezes Usada', color_continuous_scale='Oranges',
+                                        text='Quantidade de Vezes Usada')
+                    fig_colabs.update_layout(yaxis_title="", xaxis_title="", showlegend=False, height=350)
+                    fig_colabs.update_traces(textposition='outside')
+                    st.plotly_chart(fig_colabs, use_container_width=True)
+                    
+                with col_ranking_tab:
+                    st.dataframe(ranking_colaboradores.head(10), use_container_width=True, hide_index=True)
+            
+            st.divider()
+            st.markdown("#### Tabela Completa Geral de Tabulações")
             st.dataframe(resumo_finalizacao.style.background_gradient(cmap='Blues', subset=['Quantidade']), use_container_width=True, hide_index=True)
 
     with aba3:
@@ -232,37 +259,6 @@ if not df_historico.empty:
             fig_ops.update_layout(yaxis_title="", xaxis_title="", showlegend=False, height=400)
             fig_ops.update_traces(textposition='outside')
             st.plotly_chart(fig_ops, use_container_width=True)
-            
-            st.divider()
-            
-            st.markdown("#### 🏆 Top Operadores por Tabulação Específica")
-            
-            opcoes_tabulacao = sorted(df_filtrado['Finalização'].unique().tolist())
-            tab_selecionada = st.selectbox("Escolha a Tabulação (Finalização):", options=opcoes_tabulacao)
-            
-            if tab_selecionada:
-                df_tab_especifica = df_filtrado[df_filtrado['Finalização'] == tab_selecionada]
-                
-                ranking_tab = df_tab_especifica['Usuários'].value_counts().reset_index()
-                ranking_tab.columns = ['Operador', 'Quantidade']
-                top_10_ranking_tab = ranking_tab.head(10).sort_values('Quantidade', ascending=True)
-                
-                if not top_10_ranking_tab.empty:
-                    fig_ranking_tab = px.bar(
-                        top_10_ranking_tab, 
-                        x='Quantidade', 
-                        y='Operador', 
-                        orientation='h',
-                        title=f"Maiores utilizadores da tabulação: {tab_selecionada[:45]}...",
-                        text='Quantidade', 
-                        color='Quantidade', 
-                        color_continuous_scale='Oranges' 
-                    )
-                    fig_ranking_tab.update_layout(yaxis_title="", xaxis_title="", showlegend=False, height=400)
-                    fig_ranking_tab.update_traces(textposition='outside')
-                    st.plotly_chart(fig_ranking_tab, use_container_width=True)
-                else:
-                    st.info("Não há registos desta tabulação no período selecionado.")
             
             st.divider()
             
@@ -282,4 +278,4 @@ if not df_historico.empty:
         st.dataframe(df_filtrado, use_container_width=True, hide_index=True)
 
 else:
-    st.info("👆 O seu banco de dados no GitHub está vazio. Utilize o menu lateral esquerdo para fazer o upload do seu primeiro ficheiro CSV (ex: abril.csv).")
+    st.info("👆 O seu banco de dados no GitHub está vazio ou precisa ser reiniciado. Utilize o menu lateral esquerdo para fazer o upload do seu primeiro ficheiro CSV (ex: abril.csv).")
