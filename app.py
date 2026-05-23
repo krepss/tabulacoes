@@ -46,7 +46,7 @@ def salvar_historico_github(df, sha=None):
     csv_buffer = io.StringIO()
     df.to_csv(csv_buffer, index=False)
     conteudo_str = csv_buffer.getvalue()
-    mensagem_commit = "Base de dados pareada exclusivamente com tabulações reais"
+    mensagem_commit = "Base de dados pareada com regra de substituicao de mes"
     
     try:
         contents = repo.get_contents(CAMINHO_ARQUIVO)
@@ -69,16 +69,16 @@ def salvar_historico_github(df, sha=None):
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/8956/8956600.png", width=80)
     st.header("📥 Alimentar Histórico")
-    st.markdown("O sistema capta apenas as tabulações exatas vinculadas às filas alvo.")
+    st.markdown("O sistema fará a substituição automática caso o mês já exista.")
     arquivo_carregado = st.file_uploader("1. Selecione o CSV", type=["csv"])
     mes_referencia = st.text_input("2. Mês/Ano (Ex: Abril/2026)")
-    btn_adicionar = st.button("3. Adicionar ao Histórico", use_container_width=True, type="primary")
+    btn_adicionar = st.button("3. Adicionar/Atualizar Histórico", use_container_width=True, type="primary")
 
 df_historico, file_sha = carregar_historico_github()
 
 if btn_adicionar:
     if arquivo_carregado is not None and mes_referencia != "":
-        with st.spinner('A processar cruzamento estrito e a guardar no GitHub...'):
+        with st.spinner(f'A processar os dados de {mes_referencia} e a atualizar o GitHub...'):
             df_bruto = pd.read_csv(arquivo_carregado)
             
             df_bruto['Usuários'] = df_bruto['Usuários'].fillna("")
@@ -88,21 +88,16 @@ if btn_adicionar:
             linhas_processadas = []
             
             for _, row in df_bruto.iterrows():
-                # Separa as informações na exata ordem do CSV
                 usuarios = [u.strip() for u in str(row['Usuários']).split(';')]
                 filas = [f.strip() for f in str(row['Fila']).split(';')]
                 tabulacoes = [t.strip() for t in str(row['Finalização']).split(';')]
                 
-                # O SEGREDO ESTÁ AQUI: Navegamos fila a fila pela ordem
                 for i in range(len(filas)):
                     f_atual = filas[i]
                     
-                    # Passo 1: Confirma se é uma Fila de Retenção
                     if f_atual in FILAS_ALVO:
-                        # Passo 2: Confirma se EXISTE uma tabulação na mesma posição (ignora vazios)
                         if i < len(tabulacoes) and tabulacoes[i]:
                             t_atual = tabulacoes[i]
-                            # Pega o utilizador ou marca como Desconhecido se o Genesys não exportou
                             u_atual = usuarios[i] if i < len(usuarios) and usuarios[i] else "Desconhecido"
                             
                             nova_linha = {
@@ -121,13 +116,26 @@ if btn_adicionar:
                 st.sidebar.error("Nenhuma tabulação válida foi encontrada para as filas de Retenção!")
             else:
                 if not df_historico.empty:
+                    # --- A MÁGICA DA SUBSTITUIÇÃO ESTÁ AQUI ---
                     if mes_referencia in df_historico['Mês de Referência'].values:
-                        st.sidebar.warning(f"Os dados de {mes_referencia} já estão catalogados!")
+                        st.sidebar.info(f"O mês de {mes_referencia} já existia. A substituir pelos novos dados...")
+                        # Remove as linhas antigas deste mês
+                        df_historico_sem_mes = df_historico[df_historico['Mês de Referência'] != mes_referencia]
+                        # Junta com as novas
+                        df_atualizado = pd.concat([df_historico_sem_mes, df_novo_limpo], ignore_index=True)
+                        
+                        sucesso, erro_msg = salvar_historico_github(df_atualizado, file_sha)
+                        if sucesso:
+                            st.sidebar.success(f"✅ Mês de {mes_referencia} atualizado com sucesso!")
+                            st.rerun() 
+                        else:
+                            st.sidebar.error(f"Falha ao atualizar: {erro_msg}")
                     else:
+                        # Se não existia, adiciona normalmente
                         df_atualizado = pd.concat([df_historico, df_novo_limpo], ignore_index=True)
                         sucesso, erro_msg = salvar_historico_github(df_atualizado, file_sha)
                         if sucesso:
-                            st.sidebar.success("✅ Adicionado com sucesso!")
+                            st.sidebar.success("✅ Novo mês adicionado com sucesso!")
                             st.rerun() 
                         else:
                             st.sidebar.error(f"Falha ao guardar: {erro_msg}")
