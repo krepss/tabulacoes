@@ -46,7 +46,7 @@ def salvar_historico_github(df, sha=None):
     csv_buffer = io.StringIO()
     df.to_csv(csv_buffer, index=False)
     conteudo_str = csv_buffer.getvalue()
-    mensagem_commit = "Base pareada triplamente (Usuario+Fila+Tabulacao)"
+    mensagem_commit = "Base de dados pareada exclusivamente com tabulações reais"
     
     try:
         contents = repo.get_contents(CAMINHO_ARQUIVO)
@@ -69,7 +69,7 @@ def salvar_historico_github(df, sha=None):
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/8956/8956600.png", width=80)
     st.header("📥 Alimentar Histórico")
-    st.markdown("O sistema fará o pareamento exato entre Usuário, Fila e Tabulação.")
+    st.markdown("O sistema capta apenas as tabulações exatas vinculadas às filas alvo.")
     arquivo_carregado = st.file_uploader("1. Selecione o CSV", type=["csv"])
     mes_referencia = st.text_input("2. Mês/Ano (Ex: Abril/2026)")
     btn_adicionar = st.button("3. Adicionar ao Histórico", use_container_width=True, type="primary")
@@ -78,48 +78,47 @@ df_historico, file_sha = carregar_historico_github()
 
 if btn_adicionar:
     if arquivo_carregado is not None and mes_referencia != "":
-        with st.spinner('A processar o pareamento triplo (Usuário > Fila > Tabulação)...'):
+        with st.spinner('A processar cruzamento estrito e a guardar no GitHub...'):
             df_bruto = pd.read_csv(arquivo_carregado)
             
-            df_bruto['Usuários'] = df_bruto['Usuários'].fillna("Desconhecido")
-            df_bruto['Fila'] = df_bruto['Fila'].fillna("Sem Fila")
-            df_bruto['Finalização'] = df_bruto['Finalização'].fillna("Sem Tabulação")
+            df_bruto['Usuários'] = df_bruto['Usuários'].fillna("")
+            df_bruto['Fila'] = df_bruto['Fila'].fillna("")
+            df_bruto['Finalização'] = df_bruto['Finalização'].fillna("")
             
             linhas_processadas = []
             
             for _, row in df_bruto.iterrows():
-                # Agora separamos as TRÊS colunas baseadas no ponto e vírgula
-                usuarios = [u.strip() for u in str(row['Usuários']).split(';') if u.strip()]
-                filas = [f.strip() for f in str(row['Fila']).split(';') if f.strip()]
-                tabulacoes = [t.strip() for t in str(row['Finalização']).split(';') if t.strip()]
+                # Separa as informações na exata ordem do CSV
+                usuarios = [u.strip() for u in str(row['Usuários']).split(';')]
+                filas = [f.strip() for f in str(row['Fila']).split(';')]
+                tabulacoes = [t.strip() for t in str(row['Finalização']).split(';')]
                 
-                # Pega o maior tamanho entre os 3 para não deixar ninguém de fora
-                max_len = max(len(usuarios), len(filas), len(tabulacoes))
-                
-                for i in range(max_len):
-                    # Se uma lista for menor que a outra, preenche com um padrão
-                    u_atual = usuarios[i] if i < len(usuarios) else "Desconhecido"
-                    f_atual = filas[i] if i < len(filas) else "Sem Fila"
-                    t_atual = tabulacoes[i] if i < len(tabulacoes) else "Sem Tabulação"
+                # O SEGREDO ESTÁ AQUI: Navegamos fila a fila pela ordem
+                for i in range(len(filas)):
+                    f_atual = filas[i]
                     
-                    # Salva a linha com a pessoa certa, na fila certa, com a tabulação certa
-                    nova_linha = {
-                        'Mês de Referência': mes_referencia,
-                        'Data': row.get('Data', '-'),
-                        'Usuários': u_atual,
-                        'Direção': row.get('Direção', '-'),
-                        'Fila': f_atual,
-                        'Finalização': t_atual
-                    }
-                    linhas_processadas.append(nova_linha)
+                    # Passo 1: Confirma se é uma Fila de Retenção
+                    if f_atual in FILAS_ALVO:
+                        # Passo 2: Confirma se EXISTE uma tabulação na mesma posição (ignora vazios)
+                        if i < len(tabulacoes) and tabulacoes[i]:
+                            t_atual = tabulacoes[i]
+                            # Pega o utilizador ou marca como Desconhecido se o Genesys não exportou
+                            u_atual = usuarios[i] if i < len(usuarios) and usuarios[i] else "Desconhecido"
+                            
+                            nova_linha = {
+                                'Mês de Referência': mes_referencia,
+                                'Data': row.get('Data', '-'),
+                                'Usuários': u_atual,
+                                'Direção': row.get('Direção', '-'),
+                                'Fila': f_atual,
+                                'Finalização': t_atual
+                            }
+                            linhas_processadas.append(nova_linha)
             
-            df_combinado = pd.DataFrame(linhas_processadas)
-            
-            # Filtra mantendo apenas o que virou uma Fila de Retenção
-            df_novo_limpo = df_combinado[df_combinado['Fila'].isin(FILAS_ALVO)].copy()
+            df_novo_limpo = pd.DataFrame(linhas_processadas)
             
             if df_novo_limpo.empty:
-                st.sidebar.error("Nenhum dado das filas de Retenção foi localizado após o pareamento!")
+                st.sidebar.error("Nenhuma tabulação válida foi encontrada para as filas de Retenção!")
             else:
                 if not df_historico.empty:
                     if mes_referencia in df_historico['Mês de Referência'].values:
@@ -150,9 +149,6 @@ st.markdown("Acompanhamento de volumetria e ofensores das filas de retenção.")
 
 if not df_historico.empty:
     df_filtrado = df_historico.copy()
-    df_filtrado['Finalização'] = df_filtrado.get('Finalização', pd.Series()).fillna("Sem Tabulação")
-    df_filtrado['Usuários'] = df_filtrado.get('Usuários', pd.Series()).fillna("Desconhecido")
-    df_filtrado['Fila'] = df_filtrado.get('Fila', pd.Series()).fillna("Sem Fila")
     
     st.sidebar.markdown("---")
     st.sidebar.header("🔍 Filtros de Visualização")
@@ -173,7 +169,7 @@ if not df_historico.empty:
     
     st.markdown("### 🎯 Indicadores Principais")
     col1, col2, col3 = st.columns(3)
-    col1.metric("Total de Atendimentos (Filtrados)", f"{len(df_filtrado):,}".replace(",", "."))
+    col1.metric("Total de Tabulações (Filtradas)", f"{len(df_filtrado):,}".replace(",", "."))
     col2.metric("Meses Analisados", df_filtrado['Mês de Referência'].nunique())
     col3.metric("Principal Tabulação (Ofensor)", top_tabulacao[:40] + "...") 
     
